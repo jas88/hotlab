@@ -324,12 +324,21 @@ the gap Hotlab fills.
 ## Open questions
 
 1. **Where auth lives**: portal-first (log in to a web UI, pick a lab, then connect) vs
-   gateway-triggered (logging in to Guacamole/RDP *is* the trigger). Gateway-triggered
+   gateway-triggered (logging in to the gateway *is* the trigger). Gateway-triggered
    is more elegant; portal-first is easier to debug and shows session status.
-2. **Identity backend**: local users, LDAP/AD, or OIDC.
-3. **Value of X**: the per-group grace period default, max session duration, idle timeout.
-4. **Pod networking mechanism**: Proxmox SDN VNets vs. per-session VLAN tags vs.
+2. **Value of X**: the per-group grace period default, max session duration, idle timeout.
+3. **Pod networking mechanism**: Proxmox SDN VNets vs. per-session VLAN tags vs.
    dedicated bridges — depends on cluster setup and scale.
-5. **RDP plumbing**: IronRDP/Devolutions Gateway (covers browser + native clients) vs.
+4. **RDP plumbing**: IronRDP/Devolutions Gateway (covers browser + native clients) vs.
    guacd for browser plus a separate RD Gateway component for native clients.
-6. **Broker implementation language/stack** — to be decided before prototyping.
+
+## Decided
+
+- **Broker stack: .NET 8+** (C#). Gateway-side customizations (e.g. redirection PDU
+  emission) remain Rust in the IronRDP/Devolutions ecosystem; the broker↔gateway
+  REST/token interface keeps that split clean.
+- **Identity: phased** — local users for the prototype (a PVE host is available but
+  no directory server yet); LDAP bind-as-user per the security design when one exists.
+- **First milestone: spike against the real PVE host** — drive clone→pool→start→
+  agent-ready→destroy via the API, measure clone-to-RDP-listener timings, and test
+  qemu-rdp feasibility against PVE's QEMU build.

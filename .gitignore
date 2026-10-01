@@ -1,2 +1,9 @@
 data/openmemory.sqlite*
 .claude/settings.local.json
+
+# .NET
+bin/
+obj/
+*.user
+.vs/
+artifacts/

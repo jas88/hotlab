@@ -35,10 +35,10 @@ internal static class DeployTestSupport
 {
     public static readonly DeployTimings FastTimings = new()
     {
-        AgentTimeout = TimeSpan.FromMilliseconds(300),
-        CommandTimeout = TimeSpan.FromSeconds(5),
-        ShutdownTimeout = TimeSpan.FromSeconds(5),
-        PollInterval = TimeSpan.Zero,
+        AgentTimeout = TimeSpan.FromMilliseconds(300), // only expires for AgentDownFor VMs (the fake pings instantly)
+        CommandTimeout = TimeSpan.FromMinutes(1), // never expected to expire: generous for slow CI
+        ShutdownTimeout = TimeSpan.FromMinutes(1),
+        PollInterval = TimeSpan.FromMilliseconds(1),
     };
 
     public static DeployRequest Request(string outDir, params string[] users) => new()

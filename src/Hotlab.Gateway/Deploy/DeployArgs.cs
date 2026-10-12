@@ -20,7 +20,10 @@ public static class DeployArgs
         "                      Hotlab:Tokens:DefaultLifetime. For a lab used all term, use e.g. 120d.\n" +
         "  --parallel          clones provisioned at once (default 4; cloning itself is sequential)\n" +
         "  --users-file-target merge mappings into the gateway's Hotlab:UsersFile (refuses to remap\n" +
-        "                      users mapped to other VMs unless --force)";
+        "                      users mapped to other VMs unless --force); fixed once recorded\n" +
+        "  --force             also allows changing --address on a re-run (regenerates every .rdp file)\n" +
+        "  --name              deployment name (default: --out's directory name); at most 32 characters\n" +
+        "                      once lowercased with anything but a-z, 0-9 turned into '-'";
 
     private const int MaxParallel = 64;
 
@@ -90,7 +93,7 @@ public static class DeployArgs
                     break;
                 case "--name":
                     if (DeployNames.NormalizeDeploymentName(value) is null)
-                        return Fail(out error, $"Invalid --name '{value}'.");
+                        return Fail(out error, $"Invalid --name '{value}' ({DeployNames.DeploymentNameRule}).");
                     name = value;
                     break;
                 case "--guest-user":
@@ -109,9 +112,13 @@ public static class DeployArgs
                         return Fail(out error, $"Invalid --parallel '{value}' (1-{MaxParallel}).");
                     break;
                 case "--users-file":
+                    if (string.IsNullOrWhiteSpace(value))
+                        return Fail(out error, "--users-file requires a path.");
                     usersFile = value;
                     break;
                 case "--users-file-target":
+                    if (string.IsNullOrWhiteSpace(value))
+                        return Fail(out error, "--users-file-target requires a path.");
                     target = value;
                     break;
             }
@@ -126,7 +133,8 @@ public static class DeployArgs
             {
                 rawUsers.AddRange(ReadUsersFile(usersFile));
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException
+                or NotSupportedException)
             {
                 return Fail(out error, $"Cannot read --users-file: {ex.Message}");
             }

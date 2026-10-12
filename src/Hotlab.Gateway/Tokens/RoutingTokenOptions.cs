@@ -1,3 +1,5 @@
+using Hotlab.Gateway.Configuration;
+
 namespace Hotlab.Gateway.Tokens;
 
 /// <summary>
@@ -51,6 +53,34 @@ public sealed class RoutingTokenOptions
             throw new InvalidOperationException(
                 $"{SectionName}:SigningKey must decode to at least {MinimumKeyBytes} bytes (got {key.Length}).");
         return key;
+    }
+
+    /// <summary>
+    /// Checks the settings: a decodable signing key (if set), a positive
+    /// <see cref="DefaultLifetime"/> and a non-negative <see cref="ClockSkew"/>. Returns an
+    /// error message, or null when valid. Used for startup validation of the gateway and of
+    /// the CLI verbs.
+    /// </summary>
+    public string? Validate()
+    {
+        string? keyError = null;
+        try
+        {
+            DecodeSigningKey();
+        }
+        catch (InvalidOperationException ex)
+        {
+            keyError = ex.Message;
+        }
+
+        return OptionsValidation.Combine(
+            keyError,
+            DefaultLifetime <= TimeSpan.Zero
+                ? $"{SectionName}:DefaultLifetime must be positive (got {DefaultLifetime})."
+                : null,
+            ClockSkew < TimeSpan.Zero
+                ? $"{SectionName}:ClockSkew must not be negative (got {ClockSkew})."
+                : null);
     }
 
     /// <summary>Describes the settings with the key redacted.</summary>

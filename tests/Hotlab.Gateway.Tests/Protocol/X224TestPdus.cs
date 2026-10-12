@@ -11,6 +11,21 @@ internal static class X224TestPdus
         (byte)protocols, (byte)(protocols >> 8), (byte)(protocols >> 16), (byte)(protocols >> 24),
     ];
 
+    /// <summary>
+    /// RDP_NEG_CORRELATION_INFO (MS-RDPBCGR 2.2.1.1.2): type 0x06, flags 0, length 0x0024
+    /// (little-endian), a 16-byte correlationId (first byte not 0x00/0xF4, no 0x0D bytes),
+    /// then 16 reserved zero bytes.
+    /// </summary>
+    public static byte[] CorrelationInfo()
+    {
+        var info = new byte[36];
+        info[0] = 0x06;
+        info[2] = 0x24;
+        for (int i = 0; i < 16; i++)
+            info[4 + i] = (byte)(0x10 + i);
+        return info;
+    }
+
     /// <summary>Wraps a variable part in a CR TPDU and TPKT header with consistent lengths.</summary>
     public static byte[] Build(byte[] variable, byte code = 0xE0)
     {

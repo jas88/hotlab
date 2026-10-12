@@ -1,3 +1,5 @@
+using Hotlab.Gateway.Configuration;
+
 namespace Hotlab.Gateway.Deploy;
 
 /// <summary>A parsed <c>deploy</c> invocation.</summary>
@@ -57,6 +59,14 @@ public sealed class DeployTimings
 
     /// <summary>Polling interval for the agent and guest commands.</summary>
     public TimeSpan PollInterval { get; set; } = TimeSpan.FromSeconds(2);
+
+    /// <summary>Returns the problems with these settings (each must be a positive timeout), or null when valid.</summary>
+    public string? Validate() =>
+        OptionsValidation.Combine(
+            OptionsValidation.CheckTimeout($"{SectionName}:{nameof(AgentTimeout)}", AgentTimeout),
+            OptionsValidation.CheckTimeout($"{SectionName}:{nameof(CommandTimeout)}", CommandTimeout),
+            OptionsValidation.CheckTimeout($"{SectionName}:{nameof(ShutdownTimeout)}", ShutdownTimeout),
+            OptionsValidation.CheckTimeout($"{SectionName}:{nameof(PollInterval)}", PollInterval));
 }
 
 /// <summary>A per-user deployment step failed; the message is safe to print (no secrets).</summary>

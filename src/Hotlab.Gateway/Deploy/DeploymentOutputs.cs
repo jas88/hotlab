@@ -81,8 +81,28 @@ public static class DeploymentOutputs
     public static void WriteUsersJson(string dir, IEnumerable<UserMapping> mappings) =>
         AtomicFile.WriteAllText(Path.Combine(dir, UsersJsonFile), RenderUsersJson(mappings), AtomicFile.PrivateFile);
 
-    private static string Csv(string value) =>
-        value.AsSpan().IndexOfAny(",\"\r\n") < 0 ? value : "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+    /// <summary>
+    /// True when two full paths name the same file (case-insensitively on Windows and macOS,
+    /// whose default file systems are).
+    /// </summary>
+    public static bool SamePath(string a, string b) =>
+        string.Equals(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)),
+            OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    /// <summary>
+    /// Quotes a field when needed. Line breaks are refused rather than quoted: no valid field
+    /// contains one (users, accounts, passwords and file names are all validated), and
+    /// <see cref="ReadPasswords"/> reads one row per line.
+    /// </summary>
+    /// <exception cref="ArgumentException">The value contains CR or LF.</exception>
+    private static string Csv(string value)
+    {
+        if (value.AsSpan().IndexOfAny('\r', '\n') >= 0)
+            throw new ArgumentException("passwords.csv fields must not contain line breaks.", nameof(value));
+        return value.AsSpan().IndexOfAny(",\"") < 0 ? value : "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+    }
 
     internal static List<string> ParseCsvLine(string line)
     {

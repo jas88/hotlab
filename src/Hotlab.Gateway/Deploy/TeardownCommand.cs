@@ -17,7 +17,7 @@ public static class TeardownCommand
         "  and tagged hotlab), removes the pool once empty, removes the users' mappings from the gateway\n" +
         "  users file (unless --keep-mappings) and deletes their passwords from passwords.csv.";
 
-    /// <summary>Runs the command. Returns the process exit code (0 success, 1 failure/config error, 2 usage error).</summary>
+    /// <summary>Runs the command. Returns the process exit code (0 success or --help, 1 failure/config error, 2 usage error).</summary>
     public static async Task<int> RunAsync(
         IReadOnlyList<string> args, IConfiguration configuration, TextWriter stdout, TextWriter stderr,
         Func<IConfiguration, IDeployBackend>? backendFactory = null, TimeProvider? timeProvider = null,
@@ -41,8 +41,8 @@ public static class TeardownCommand
                     keepMappings = true;
                     break;
                 case "-h" or "--help":
-                    stderr.WriteLine(Usage);
-                    return 2;
+                    stdout.WriteLine(Usage);
+                    return 0;
                 default:
                     stderr.WriteLine($"Unexpected argument '{args[i]}'.");
                     stderr.WriteLine(Usage);

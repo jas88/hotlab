@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using Hotlab.Gateway.Routing;
+using Hotlab.Proxmox;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -11,28 +12,37 @@ namespace Hotlab.Gateway.Activation;
 /// Brings a user's VM to a state where its RDP port accepts connections:
 /// starts it if stopped, discovers its address (guest agent unless
 /// <see cref="VmTarget.Host"/> is set), then waits for the port to open.
-/// Concurrent requests for the same VM share a single in-flight activation.
+/// Concurrent requests for the same target (VM, host override and port) share a single
+/// in-flight activation.
 /// </summary>
 public sealed partial class VmActivator : IVmActivator
 {
     private const string RunningStatus = "running";
 
+    /// <summary>Minimum gap between Warning-level logs of retried guest-agent failures.</summary>
+    private static readonly TimeSpan AgentWarningInterval = TimeSpan.FromSeconds(15);
+
     private readonly IVmControl _control;
     private readonly IPortProbe _probe;
     private readonly VmActivatorOptions _options;
     private readonly ILogger<VmActivator> _logger;
-    private readonly ConcurrentDictionary<(string Node, int VmId), Task<IPEndPoint>> _inflight = new();
+    private readonly TimeProvider _time;
+    private readonly ConcurrentDictionary<InflightKey, Task<IPEndPoint>> _inflight = new();
 
     /// <summary>Creates an activator.</summary>
     /// <param name="control">Hypervisor operations.</param>
     /// <param name="options">Timing options.</param>
     /// <param name="logger">Logger.</param>
     /// <param name="probe">TCP reachability probe; null for a real <see cref="TcpPortProbe"/>.</param>
+    /// <param name="timeProvider">
+    /// Clock for the ready timeout, poll delays and log throttling; null for <see cref="TimeProvider.System"/>.
+    /// </param>
     public VmActivator(
         IVmControl control,
         IOptions<VmActivatorOptions> options,
         ILogger<VmActivator> logger,
-        IPortProbe? probe = null)
+        IPortProbe? probe = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(control);
         ArgumentNullException.ThrowIfNull(options);
@@ -41,20 +51,22 @@ public sealed partial class VmActivator : IVmActivator
         _options = options.Value;
         _logger = logger;
         _probe = probe ?? new TcpPortProbe();
+        _time = timeProvider ?? TimeProvider.System;
     }
 
     /// <inheritdoc />
     /// <remarks>
     /// The shared activation runs under <see cref="VmActivatorOptions.ReadyTimeout"/>, not under
     /// <paramref name="ct"/>: cancelling one caller abandons only that caller's wait. Concurrent
-    /// calls are keyed by (Node, VmId); the first caller's <see cref="VmTarget.Port"/> and
-    /// <see cref="VmTarget.Host"/> are used for the shared activation.
+    /// calls are keyed by (Node, VmId, Host, Port), so callers only share an activation whose
+    /// endpoint is the one they asked for; calls for the same VM with a different
+    /// <see cref="VmTarget.Host"/> or <see cref="VmTarget.Port"/> run their own.
     /// </remarks>
     /// <exception cref="VmActivationException">The VM could not be made ready in time.</exception>
     public async Task<IPEndPoint> EnsureReadyAsync(VmTarget target, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(target);
-        var key = (target.Node, target.VmId);
+        var key = new InflightKey(target.Node, target.VmId, target.Host, target.Port);
 
         while (true)
         {
@@ -80,7 +92,7 @@ public sealed partial class VmActivator : IVmActivator
     }
 
     private async Task RunSharedAsync(
-        (string Node, int VmId) key, VmTarget target, TaskCompletionSource<IPEndPoint> tcs)
+        InflightKey key, VmTarget target, TaskCompletionSource<IPEndPoint> tcs)
     {
         IPEndPoint? result = null;
         Exception? error = null;
@@ -97,7 +109,7 @@ public sealed partial class VmActivator : IVmActivator
         finally
         {
             // Remove before completing so a caller arriving after completion re-checks the VM.
-            _inflight.TryRemove(new KeyValuePair<(string, int), Task<IPEndPoint>>(key, tcs.Task));
+            _inflight.TryRemove(new KeyValuePair<InflightKey, Task<IPEndPoint>>(key, tcs.Task));
         }
 
         if (error is not null)
@@ -108,46 +120,53 @@ public sealed partial class VmActivator : IVmActivator
 
     private async Task<IPEndPoint> ActivateAsync(VmTarget target)
     {
-        using var timeoutCts = new CancellationTokenSource(_options.ReadyTimeout);
+        using var timeoutCts = new CancellationTokenSource(_options.ReadyTimeout, _time);
         var ct = timeoutCts.Token;
-        var stage = "checking status";
+        var progress = new Progress();
         try
         {
-            await EnsureRunningAsync(target, ct).ConfigureAwait(false);
+            await EnsureRunningAsync(target, progress, ct).ConfigureAwait(false);
 
-            stage = target.Host is null ? "waiting for guest agent IP" : "resolving host";
-            var address = target.Host is null
-                ? await WaitForAgentAddressAsync(target, ct).ConfigureAwait(false)
-                : await ResolveHostAsync(target, target.Host, ct).ConfigureAwait(false);
-
-            var endpoint = new IPEndPoint(address, target.Port);
-            stage = "waiting for RDP port";
-            await WaitForPortAsync(endpoint, ct).ConfigureAwait(false);
+            IPEndPoint endpoint;
+            if (target.Host is null)
+            {
+                progress.Stage = "waiting for guest agent IP";
+                endpoint = await WaitForAgentEndpointAsync(target, progress, ct).ConfigureAwait(false);
+            }
+            else
+            {
+                progress.Stage = "resolving host";
+                var address = await ResolveHostAsync(target, target.Host, ct).ConfigureAwait(false);
+                endpoint = new IPEndPoint(address, target.Port);
+                progress.Stage = "waiting for RDP port";
+                await WaitForPortAsync(endpoint, ct).ConfigureAwait(false);
+            }
 
             LogReady(target.VmId, target.Node, endpoint);
             return endpoint;
         }
         catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
         {
-            LogTimedOut(target.VmId, target.Node, _options.ReadyTimeout, stage);
+            LogTimedOut(target.VmId, target.Node, _options.ReadyTimeout, progress.Stage);
             throw new VmActivationException(
                 target,
                 string.Create(
                     System.Globalization.CultureInfo.InvariantCulture,
-                    $"not ready after {_options.ReadyTimeout.TotalSeconds:0.#}s (timed out while {stage})"));
+                    $"not ready after {_options.ReadyTimeout.TotalSeconds:0.#}s (timed out while {progress.Stage})"));
         }
         catch (Exception ex) when (ex is not VmActivationException and not OperationCanceledException)
         {
-            throw new VmActivationException(target, $"activation failed while {stage}: {ex.Message}", ex);
+            throw new VmActivationException(target, $"activation failed while {progress.Stage}: {ex.Message}", ex);
         }
     }
 
-    private async Task EnsureRunningAsync(VmTarget target, CancellationToken ct)
+    private async Task EnsureRunningAsync(VmTarget target, Progress progress, CancellationToken ct)
     {
         var status = await _control.GetStatusAsync(target.Node, target.VmId, ct).ConfigureAwait(false);
         if (status == RunningStatus)
             return;
 
+        progress.Stage = "starting VM";
         LogStarting(target.VmId, target.Node, status);
         string exitStatus;
         Exception? startError = null;
@@ -175,34 +194,88 @@ public sealed partial class VmActivator : IVmActivator
         throw new VmActivationException(target, $"start failed ({exitStatus}); status is '{status}'", startError);
     }
 
-    private async Task<IPAddress> WaitForAgentAddressAsync(VmTarget target, CancellationToken ct)
+    /// <summary>
+    /// Each poll round asks the guest agent for its addresses and probes every usable one
+    /// (in the order reported) on <see cref="VmTarget.Port"/>, returning the first that accepts
+    /// a connection. Re-querying each round also follows an address that changes during boot.
+    /// </summary>
+    private async Task<IPEndPoint> WaitForAgentEndpointAsync(VmTarget target, Progress progress, CancellationToken ct)
     {
+        long? lastWarning = null;
         while (true)
         {
+            IReadOnlyList<string>? addresses = null;
             try
             {
-                var addresses = await _control.GetAgentIPv4AddressesAsync(target.Node, target.VmId, ct)
+                addresses = await _control.GetAgentIPv4AddressesAsync(target.Node, target.VmId, ct)
                     .ConfigureAwait(false);
-                foreach (var candidate in addresses)
-                {
-                    if (IPAddress.TryParse(candidate, out var ip) &&
-                        ip.AddressFamily == AddressFamily.InterNetwork &&
-                        !IPAddress.IsLoopback(ip))
-                    {
-                        return ip;
-                    }
-                }
-
-                LogAgentNoAddress(target.VmId, target.Node);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                LogAgentNotReady(target.VmId, target.Node, ex.Message);
+                if (IsPermanentAgentError(ex))
+                    throw;
+
+                // Expected while the guest boots (PVE answers 500 until the agent runs), so
+                // warn once and then at most every AgentWarningInterval; otherwise Debug.
+                if (lastWarning is null || _time.GetElapsedTime(lastWarning.Value) >= AgentWarningInterval)
+                {
+                    lastWarning = _time.GetTimestamp();
+                    LogAgentNotReadyWarning(target.VmId, target.Node, ex.Message);
+                }
+                else
+                {
+                    LogAgentNotReady(target.VmId, target.Node, ex.Message);
+                }
             }
 
-            await Task.Delay(_options.PollInterval, ct).ConfigureAwait(false);
+            if (addresses is not null)
+            {
+                var usable = UsableAddresses(addresses);
+                if (usable.Count == 0)
+                {
+                    LogAgentNoAddress(target.VmId, target.Node);
+                }
+                else
+                {
+                    progress.Stage = "waiting for RDP port";
+                    foreach (var address in usable)
+                    {
+                        var endpoint = new IPEndPoint(address, target.Port);
+                        if (await _probe.CanConnectAsync(endpoint, _options.ProbeTimeout, ct).ConfigureAwait(false))
+                            return endpoint;
+                    }
+                }
+            }
+
+            await Task.Delay(_options.PollInterval, _time, ct).ConfigureAwait(false);
         }
     }
+
+    private static List<IPAddress> UsableAddresses(IReadOnlyList<string> candidates)
+    {
+        var usable = new List<IPAddress>(candidates.Count);
+        foreach (var candidate in candidates)
+        {
+            if (IPAddress.TryParse(candidate, out var ip) &&
+                ip.AddressFamily == AddressFamily.InterNetwork &&
+                !IPAddress.IsLoopback(ip) &&
+                !usable.Contains(ip))
+            {
+                usable.Add(ip);
+            }
+        }
+        return usable;
+    }
+
+    /// <summary>
+    /// Agent errors that retrying cannot fix: authentication/permission failures and an
+    /// unknown VM. PVE reports a stopped or not-yet-running agent as 500, which is retried.
+    /// </summary>
+    private static bool IsPermanentAgentError(Exception ex) =>
+        ex is ProxmoxApiException
+        {
+            StatusCode: HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden or HttpStatusCode.NotFound,
+        };
 
     private static async Task<IPAddress> ResolveHostAsync(VmTarget target, string host, CancellationToken ct)
     {
@@ -218,7 +291,7 @@ public sealed partial class VmActivator : IVmActivator
     private async Task WaitForPortAsync(IPEndPoint endpoint, CancellationToken ct)
     {
         while (!await _probe.CanConnectAsync(endpoint, _options.ProbeTimeout, ct).ConfigureAwait(false))
-            await Task.Delay(_options.PollInterval, ct).ConfigureAwait(false);
+            await Task.Delay(_options.PollInterval, _time, ct).ConfigureAwait(false);
     }
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Joining in-flight activation of VM {VmId} on {Node}")]
@@ -234,6 +307,10 @@ public sealed partial class VmActivator : IVmActivator
     [LoggerMessage(Level = LogLevel.Debug, Message = "Guest agent on VM {VmId} ({Node}) not ready: {Reason}")]
     private partial void LogAgentNotReady(int vmId, string node, string reason);
 
+    [LoggerMessage(Level = LogLevel.Warning,
+        Message = "Guest agent on VM {VmId} ({Node}) not ready, retrying: {Reason}")]
+    private partial void LogAgentNotReadyWarning(int vmId, string node, string reason);
+
     [LoggerMessage(Level = LogLevel.Debug, Message = "Guest agent on VM {VmId} ({Node}) reported no usable IPv4 address yet")]
     private partial void LogAgentNoAddress(int vmId, string node);
 
@@ -243,4 +320,13 @@ public sealed partial class VmActivator : IVmActivator
     [LoggerMessage(Level = LogLevel.Warning,
         Message = "VM {VmId} on {Node} not ready within {Timeout} (stage: {Stage})")]
     private partial void LogTimedOut(int vmId, string node, TimeSpan timeout, string stage);
+
+    /// <summary>Shared-activation key: callers share only when they want the same endpoint.</summary>
+    private readonly record struct InflightKey(string Node, int VmId, string? Host, int Port);
+
+    /// <summary>What the activation is doing, for timeout and failure messages.</summary>
+    private sealed class Progress
+    {
+        public string Stage { get; set; } = "checking status";
+    }
 }

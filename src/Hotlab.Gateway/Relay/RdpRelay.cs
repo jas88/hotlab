@@ -38,7 +38,10 @@ public static class RdpRelay
         var first = await Task.WhenAny(upTask, downTask).ConfigureAwait(false);
         if (!first.IsCompletedSuccessfully)
         {
-            error = first.Exception?.GetBaseException();
+            // A cancelled task carries no Exception; record the cancellation it observed.
+            error = first.IsCanceled
+                ? new OperationCanceledException(cts.Token)
+                : first.Exception?.GetBaseException();
             await cts.CancelAsync().ConfigureAwait(false);
         }
         else if (halfCloseTimeout is { } timeout)
@@ -57,12 +60,31 @@ public static class RdpRelay
             await cts.CancelAsync().ConfigureAwait(false);
         }
 
-        if (error is null && ct.IsCancellationRequested)
-            error = new OperationCanceledException(ct);
-        else if (error is OperationCanceledException && !ct.IsCancellationRequested)
-            error = new TimeoutException("Half-closed connection did not finish in time.");
+        // Only a pump that actually observed cancellation reports it: if both directions
+        // finished cleanly, a late cancellation of ct is not an error.
+        if (error is OperationCanceledException)
+        {
+            error = ct.IsCancellationRequested
+                ? new OperationCanceledException(ct)
+                : new TimeoutException("Half-closed connection did not finish in time.");
+        }
 
         return new RelayResult(up.Value, down.Value, error);
+    }
+
+    /// <summary>
+    /// Sends all of <paramref name="data"/>, looping over partial sends (a single
+    /// <see cref="Socket.SendAsync(ReadOnlyMemory{byte}, SocketFlags, CancellationToken)"/>
+    /// may accept fewer bytes than offered).
+    /// </summary>
+    public static async Task SendAllAsync(Socket socket, ReadOnlyMemory<byte> data, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(socket);
+        while (!data.IsEmpty)
+        {
+            var n = await socket.SendAsync(data, SocketFlags.None, ct).ConfigureAwait(false);
+            data = data[n..];
+        }
     }
 
     private static async Task PumpAsync(Socket from, Socket to, Counter counter, CancellationToken ct)
@@ -79,11 +101,11 @@ public static class RdpRelay
                 var sent = 0;
                 while (sent < n)
                 {
-                    sent += await to.SendAsync(buffer.AsMemory(sent, n - sent), SocketFlags.None, ct)
+                    var chunk = await to.SendAsync(buffer.AsMemory(sent, n - sent), SocketFlags.None, ct)
                         .ConfigureAwait(false);
+                    sent += chunk;
+                    counter.Value += chunk; // count what reached the socket even if a later send fails
                 }
-
-                counter.Value += n;
             }
 
             // Propagate the FIN; the other direction keeps running.

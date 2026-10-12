@@ -23,6 +23,9 @@ public sealed class DeployNamesTests
     [InlineData("abcdefghijabcdefghijabcdefghijabc")] // 33 chars
     [InlineData("root")]
     [InlineData("ROOT")]
+    [InlineData("\u212Aelvin")] // Kelvin sign: lowercases to an ASCII 'k'
+    [InlineData("caf\u00e9")]
+    [InlineData("\u0130nci")] // dotted capital I
     public void NormalizeUser_rejects(string raw)
     {
         Assert.Null(DeployNames.NormalizeUser(raw, out var error));
@@ -44,10 +47,28 @@ public sealed class DeployNamesTests
         Assert.False(name.EndsWith('-'));
     }
 
+    [Fact]
+    public void Truncated_vm_names_stay_unique_and_stable()
+    {
+        var deployment = new string('d', 32);
+        var a = DeployNames.VmName(deployment, new string('u', 31) + "a");
+        var b = DeployNames.VmName(deployment, new string('u', 31) + "b");
+
+        Assert.NotEqual(a, b);
+        Assert.Equal(a, DeployNames.VmName(deployment, new string('u', 31) + "a"));
+        Assert.All(new[] { a, b }, n => Assert.Matches("^hotlab-d+-u*-?[0-9a-f]{8}$", n));
+        Assert.All(new[] { a, b }, n => Assert.Equal(63, n.Length));
+        Assert.Equal("hotlab-lab-alice", DeployNames.VmName("lab", "alice")); // short names unchanged
+    }
+
     [Theory]
     [InlineData("Net 101", "net-101")]
     [InlineData("  CS/2026 Spring ", "cs-2026-spring")]
     [InlineData("---", null)]
+    [InlineData("abcdefghijabcdefghijabcdefghijab", "abcdefghijabcdefghijabcdefghijab")] // 32
+    [InlineData("abcdefghijabcdefghijabcdefghijabc", null)] // 33: rejected, not truncated
+    [InlineData("  abcdefghij abcdefghij abcdefghij  ", "abcdefghij-abcdefghij-abcdefghij")] // 32 after trimming
+    [InlineData("abcdefghijk abcdefghijk abcdefghijk", null)] // 35
     public void NormalizeDeploymentName(string raw, string? expected) =>
         Assert.Equal(expected, DeployNames.NormalizeDeploymentName(raw));
 

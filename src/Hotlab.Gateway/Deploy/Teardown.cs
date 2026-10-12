@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using Hotlab.Proxmox;
 
 namespace Hotlab.Gateway.Deploy;
@@ -44,7 +45,17 @@ public sealed class Teardown
             return 2;
         }
 
-        var state = new DeploymentState(outDir, manifest, DeploymentOutputs.ReadPasswords(outDir), _time);
+        DeploymentState state;
+        try
+        {
+            state = new DeploymentState(outDir, manifest, DeploymentOutputs.ReadPasswords(outDir), _time);
+        }
+        catch (Exception ex) when (IsFileError(ex))
+        {
+            _log.Error($"Cannot read {DeploymentOutputs.PasswordsFile}: {ex.Message}");
+            return 1;
+        }
+
         int problems = 0;
         try
         {
@@ -57,7 +68,7 @@ public sealed class Teardown
             if (!await RemovePoolAsync(manifest.Pool, ct).ConfigureAwait(false))
                 problems++;
         }
-        catch (Exception ex) when (ex is ProxmoxApiException or HttpRequestException)
+        catch (Exception ex) when (ex is ProxmoxApiException or HttpRequestException || IsFileError(ex))
         {
             _log.Error($"Teardown stopped: {ex.Message}");
             problems++;
@@ -68,10 +79,21 @@ public sealed class Teardown
             problems++;
         }
 
-        FinishFiles(outDir, state, keepMappings);
+        try
+        {
+            FinishFiles(outDir, state, keepMappings);
+        }
+        catch (Exception ex) when (IsFileError(ex))
+        {
+            _log.Error($"Could not update the deployment's files: {ex.Message}");
+            problems++;
+        }
         PrintSummary(manifest);
         return problems == 0 ? 0 : 1;
     }
+
+    private static bool IsFileError(Exception ex) =>
+        ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException;
 
     private async Task<bool> DestroyUserAsync(DeploymentState state, DeployedUser row, CancellationToken ct)
     {
@@ -83,11 +105,11 @@ public sealed class Teardown
 
         try
         {
-            var check = await VmCleanup.CheckAsync(_backend, state.Manifest.Pool, vmId, requireTag: true, ct)
-                .ConfigureAwait(false);
+            var rule = new VmOwnershipRule(state.Manifest.Pool, RequireTag: true, ExpectedName: null);
+            var check = await VmCleanup.CheckAsync(_backend, rule, vmId, ct).ConfigureAwait(false);
             if (check.Exists && !check.Owned)
             {
-                var message = $"VM {vmId} is not in pool {state.Manifest.Pool} with tag {DeployNames.Tag}; not destroying it";
+                var message = $"VM {vmId} is not {rule.Describe()}; not destroying it";
                 _log.Error($"{row.User}: {message}.");
                 state.Update(row, r => r.Error = message);
                 return false;
@@ -95,7 +117,7 @@ public sealed class Teardown
             if (check.Exists)
             {
                 _log.Info($"{row.User}: destroying VM {vmId}...");
-                await VmCleanup.DestroyAsync(_backend, check.Node!, vmId, ct).ConfigureAwait(false);
+                await VmCleanup.DestroyAsync(_backend, rule, check.Node!, vmId, ct).ConfigureAwait(false);
             }
             state.Update(row, r =>
             {
@@ -132,21 +154,32 @@ public sealed class Teardown
         var manifest = state.Manifest;
         var destroyed = manifest.Users.Where(u => u.Status == DeployStatus.Destroyed).ToList();
 
+        // Passwords and .rdp files (signed routing tokens) of destroyed VMs are useless; keep
+        // any for VMs that survived.
+        foreach (var row in destroyed)
+        {
+            state.Passwords.Remove(row.User);
+            File.Delete(Path.Combine(outDir, DeploymentOutputs.RdpFileName(row.User)));
+        }
+        DeploymentOutputs.WritePasswords(outDir, state.Passwords.Values);
+
+        // When the gateway users file is this users.json, it is handled below (or kept).
+        var usersJson = Path.Combine(outDir, DeploymentOutputs.UsersJsonFile);
+        if (manifest.UsersFileTarget is null || !DeploymentOutputs.SamePath(manifest.UsersFileTarget, usersJson))
+        {
+            DeploymentOutputs.WriteUsersJson(outDir, manifest.Users
+                .Where(u => u.Status == DeployStatus.Deployed && u.VmId is not null)
+                .Select(u => new UserMapping(u.User, manifest.Node, u.VmId!.Value)));
+        }
+        state.Save();
+
+        // Last, so a broken gateway users file does not stop the local cleanup; a re-run retries it.
         if (!keepMappings && manifest.UsersFileTarget is { } target)
         {
             int removed = UserMapFile.Remove(
                 target, destroyed.Where(u => u.VmId is not null).Select(u => (u.User, u.VmId!.Value)));
             _log.Info(string.Create(CultureInfo.InvariantCulture, $"Removed {removed} mapping(s) from {target}."));
         }
-
-        // Passwords of destroyed VMs are useless; keep any for VMs that survived.
-        foreach (var row in destroyed)
-            state.Passwords.Remove(row.User);
-        DeploymentOutputs.WritePasswords(outDir, state.Passwords.Values);
-        DeploymentOutputs.WriteUsersJson(outDir, manifest.Users
-            .Where(u => u.Status == DeployStatus.Deployed && u.VmId is not null)
-            .Select(u => new UserMapping(u.User, manifest.Node, u.VmId!.Value)));
-        state.Save();
     }
 
     private void PrintSummary(DeploymentManifest manifest)

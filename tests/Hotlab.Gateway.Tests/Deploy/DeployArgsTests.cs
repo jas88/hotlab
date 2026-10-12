@@ -85,5 +85,15 @@ public sealed class DeployArgsTests : IDisposable
     [InlineData("--source", "9000", "--node", "pve1", "--address", "gw", "--out", "o", "--bogus", "alice")]
     [InlineData("--source", "9000", "--node", "pve1", "--address", "gw", "--out", "o", "--users-file", "/nonexistent/u.txt")]
     [InlineData("--source", "9000", "--node", "pve1", "--address", "gw", "--out")]
-    public void Rejects(params string[] args) => Assert.Null(DeployArgs.Parse(args, out _));
+    [InlineData("--source", "9000", "--node", "pve1", "--address", "gw", "--out", "o", "--users-file", "", "alice")]
+    [InlineData("--source", "9000", "--node", "pve1", "--address", "gw", "--out", "o", "--users-file", "a\0b", "alice")]
+    [InlineData("--source", "9000", "--node", "pve1", "--address", "gw", "--out", "o", "--users-file-target", "", "alice")]
+    [InlineData("--source", "9000", "--node", "pve1", "--address", "gw", "--out", "o", "--name", "abcdefghijabcdefghijabcdefghijabc", "alice")]
+    [InlineData("--source", "9000", "--node", "pve1", "--address", "gw", "--out", "o", "\u212Aelvin")]
+    public void Rejects(params string[] args)
+    {
+        Assert.Null(DeployArgs.Parse(args, out var error));
+        if (!args.Contains("--help"))
+            Assert.NotEqual("", error);
+    }
 }

@@ -115,7 +115,7 @@ public sealed class RdpConnectionHandler
         }
 
         ConfigureSocket(backend);
-        await backend.SendAsync(pdu, SocketFlags.None, ct).ConfigureAwait(false);
+        await RdpRelay.SendAllAsync(backend, pdu, ct).ConfigureAwait(false);
 
         _logger.LogInformation(
             "Relaying {Remote} user {User} -> {Node}/{VmId} at {Backend} (activation {ActivationMs} ms)",

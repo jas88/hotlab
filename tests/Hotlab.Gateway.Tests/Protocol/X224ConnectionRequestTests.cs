@@ -132,9 +132,24 @@ public class X224ConnectionRequestTests
     {
         var variable = new List<byte>(System.Text.Encoding.ASCII.GetBytes("Cookie: mstshash=x\r\n"));
         variable.AddRange(NegReq(0x3, flags: 0x08));
-        variable.AddRange(new byte[36]);
+        variable.AddRange(CorrelationInfo());
         Assert.True(X224ConnectionRequest.TryParse(Build([.. variable]), out var req));
         Assert.Equal("x", req!.Cookie);
+    }
+
+    [Theory]
+    [InlineData(0, 0x00)] // type must be TYPE_RDP_CORRELATION_INFO (0x06)
+    [InlineData(0, 0x01)]
+    [InlineData(2, 0x00)] // length must be 0x0024
+    [InlineData(2, 0x23)]
+    [InlineData(3, 0x01)] // length high byte
+    public void NegReq_WithMalformedCorrelationInfo_IsRejected(int offset, byte value)
+    {
+        var info = CorrelationInfo();
+        info[offset] = value;
+        var variable = new List<byte>(NegReq(0x3, flags: 0x08));
+        variable.AddRange(info);
+        Assert.False(X224ConnectionRequest.TryParse(Build([.. variable]), out _));
     }
 
     [Fact]
@@ -280,6 +295,8 @@ public class X224ConnectionRequestTests
     [InlineData("   ", null)]
     [InlineData("", null)]
     [InlineData(null, null)]
+    [InlineData("\u212Aate", null)] // KELVIN SIGN would lowercase to ASCII 'k'
+    [InlineData("LAB\\caf\u00E9", null)]
     public void NormalizeUser_Cases(string? input, string? expected)
     {
         Assert.Equal(expected, X224ConnectionRequest.NormalizeUser(input));

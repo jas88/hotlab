@@ -159,7 +159,9 @@ the spike host).
 **As built — T0, `src/Hotlab.Gateway`: 3389 byte relay.**
 
 - Reads the plaintext first PDU (TPKT + X.224 Connection Request), routes on the
-  `Cookie: mstshash=` value, starts the VM via the Proxmox API, waits for
+  `Cookie: mstshash=` value, starts the VM via the Proxmox API (**MVP exception to
+  the trust boundary**: gateway and broker are one process, so it holds the Proxmox
+  token; see *Component trust boundaries*), waits for
   guest-agent IP and an open RDP port, forwards the first PDU verbatim, then splices.
 - TLS/CredSSP stay **end to end** client↔guest. The gateway holds no certificates
   and never sees credentials (this corrects the plaintext-credentials assumption in
@@ -176,7 +178,7 @@ the spike host).
     connect timeout (see the timeout wrinkle above); the console-first handover
     below is the fix.
 
-**In progress — T1: signed routing token in `loadbalanceinfo:s:`.**
+**As built — T1: signed routing token in `loadbalanceinfo:s:`.**
 
 - mstsc sends the `.rdp` `loadbalanceinfo` value verbatim + CRLF as the X.224
   `routingToken` — the RD Connection Broker mechanism. Format
@@ -185,8 +187,11 @@ the spike host).
   `.rdp` files only**. Webfeed-delivered files are cached (see *Choosing among N
   targets*), so they carry only the non-secret lab name and fall back to name
   routing.
-- The token is a **bearer credential for routing only** — short expiry, scoped to
-  (user, lab); guest login still applies.
+- The token is a **bearer credential for routing only**. v1 tokens are
+  **user-scoped**: the signed payload is (user, expiry), and the relay resolves the
+  target from the user alone. Lab scoping needs a lab claim in a later version,
+  once a user can hold more than one lab. Guest login still applies.
+- `deploy` mints these into per-user `.rdp` files; `mint-rdp` mints one-offs.
 
 **T2 — TLS-terminating relay (planned, not committed to).**
 
@@ -231,7 +236,7 @@ the spike host).
 Upside of any qemu-rdp path: the per-VM socket appears ~5 s after start, so the
 first-connect timeout stops mattering.
 
-**Recommended path**: finish T0+T1; prototype handover option 2 against the real
+**Recommended path**: T0+T1 are built; prototype handover option 2 against the real
 Proxmox host; treat T3 as the IronRDP gateway milestone.
 
 #### Choosing among N targets (native-client workflow)
@@ -395,6 +400,12 @@ especially attack boxes in security labs — are treated as **adversarial by def
   ("authenticate this user", "authorize user X for lab Y", "route this session")
   over mTLS or a UNIX socket with peer-credential checks, carrying short-lived signed
   session grants. Gateway compromise yields zero Proxmox access.
+  **MVP exception**: `src/Hotlab.Gateway` is gateway and broker in one process and
+  holds the Proxmox API token itself, so compromising the 3389 listener exposes
+  that token. Keep the blast radius bounded by the token's ACL (Hotlab's pool and
+  VMID range only, no `Sys.*`), and keep the deploy token (clone/destroy/agent exec)
+  separate from the runtime token, which needs only `VM.Audit`, `VM.PowerMgmt` and
+  agent read access. Splitting the processes removes the exception.
 - **Guests have no route to the Proxmox API, the broker, or the directory.** The
   access network is one-way: gateway→guest RDP only, enforced by Proxmox firewall
   rules on every clone (complementing the per-group isolation defaults above).

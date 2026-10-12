@@ -43,17 +43,22 @@ public sealed class ProxmoxDeployBackend : IDeployBackend, IDisposable
     public Task<IReadOnlyList<ProxmoxPoolMember>> GetPoolMembersAsync(string pool, CancellationToken ct) =>
         _client.GetPoolMembersAsync(pool, ct);
 
-    public async Task<string> CloneAsync(
-        string node, int sourceVmId, int newVmId, string name, bool fullClone, string pool, CancellationToken ct)
-    {
-        var upid = await _client.CloneVmAsync(node, sourceVmId, newVmId, name, fullClone, pool, ct).ConfigureAwait(false);
-        return await WaitAsync(node, upid, ct).ConfigureAwait(false);
-    }
+    public Task<string> StartCloneAsync(
+        string node, int sourceVmId, int newVmId, string name, bool fullClone, string pool, CancellationToken ct) =>
+        _client.CloneVmAsync(node, sourceVmId, newVmId, name, fullClone, pool, ct);
+
+    public Task<string> WaitForTaskAsync(string node, string taskId, CancellationToken ct) => WaitAsync(node, taskId, ct);
 
     public async Task<IReadOnlySet<string>> GetTagsAsync(string node, int vmId, CancellationToken ct)
     {
         var config = await _client.GetVmConfigAsync(node, vmId, ct).ConfigureAwait(false);
         return ParseTags(config.GetValueOrDefault("tags"));
+    }
+
+    public async Task<string?> GetNameAsync(string node, int vmId, CancellationToken ct)
+    {
+        var config = await _client.GetVmConfigAsync(node, vmId, ct).ConfigureAwait(false);
+        return config.GetValueOrDefault("name");
     }
 
     public Task SetTagsAsync(string node, int vmId, IReadOnlyCollection<string> tags, CancellationToken ct) =>

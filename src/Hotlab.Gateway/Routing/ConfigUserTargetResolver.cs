@@ -1,3 +1,4 @@
+using System.Text;
 using Hotlab.Gateway.Protocol;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -26,6 +27,10 @@ public sealed class ConfigUserTargetResolver : IUserTargetResolver
     public VmTarget? Resolve(string username)
     {
         ArgumentNullException.ThrowIfNull(username);
+        // Usernames are ASCII; refusing anything else keeps case folding from aliasing
+        // (e.g. U+212A KELVIN SIGN lowercases to 'k').
+        if (!Ascii.IsValid(username))
+            return null;
         var users = _options.CurrentValue.Users;
 
         if (!users.TryGetValue(username, out var entry))
@@ -60,7 +65,7 @@ public sealed class ConfigUserTargetResolver : IUserTargetResolver
             return new CookieResolution(CookieMatch.NotFound, user, null);
 
         var candidates = _options.CurrentValue.Users
-            .Where(kv => kv.Key.StartsWith(user, StringComparison.OrdinalIgnoreCase))
+            .Where(kv => Ascii.IsValid(kv.Key) && kv.Key.StartsWith(user, StringComparison.OrdinalIgnoreCase))
             .Take(2)
             .ToList();
 

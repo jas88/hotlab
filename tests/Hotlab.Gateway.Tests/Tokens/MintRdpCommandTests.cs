@@ -87,6 +87,7 @@ public sealed class MintRdpCommandTests
     [InlineData("1d", 86400)]
     [InlineData("1.5h", 5400)]
     [InlineData("08:00:00", 8 * 3600)]
+    [InlineData("3650d", 3650 * 86400)]
     public void TryParseLifetime_Accepts(string text, int seconds)
     {
         Assert.True(MintRdpCommand.TryParseLifetime(text, out var lifetime));
@@ -99,6 +100,34 @@ public sealed class MintRdpCommandTests
     [InlineData("8x")]
     [InlineData("0h")]
     [InlineData("00:00:00")]
+    [InlineData("1000000000d")] // would overflow TimeSpan.FromDays
+    [InlineData("1e400h")]
+    [InlineData("NaNh")]
+    [InlineData("3651d")] // over MaxLifetime
+    [InlineData("10675199.02:48:05")] // TimeSpan.MaxValue, over MaxLifetime
     public void TryParseLifetime_Rejects(string text) =>
         Assert.False(MintRdpCommand.TryParseLifetime(text, out _));
+
+    [Fact]
+    public void HugeLifetime_IsUsageError()
+    {
+        var (code, output, err) = Run(Config(Key), "alice", "--address", "gw", "--lifetime", "1000000000d");
+        Assert.Equal(2, code);
+        Assert.Equal("", output);
+        Assert.Contains("Invalid --lifetime", err, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void InvalidTokenSettings_AreConfigError()
+    {
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Hotlab:Tokens:SigningKey"] = Key,
+            ["Hotlab:Tokens:ClockSkew"] = "-00:01:00",
+        }).Build();
+        var (code, output, err) = Run(config, "alice", "--address", "gw");
+        Assert.Equal(1, code);
+        Assert.Equal("", output);
+        Assert.Contains("ClockSkew", err, StringComparison.Ordinal);
+    }
 }

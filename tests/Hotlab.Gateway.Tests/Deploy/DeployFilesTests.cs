@@ -88,6 +88,56 @@ public sealed class DeployFilesTests : IDisposable
     }
 
     [Fact]
+    public void Passwords_csv_refuses_line_breaks()
+    {
+        Assert.Throws<ArgumentException>(() => DeploymentOutputs.WritePasswords(_temp.Path,
+            [new PasswordRow("bob", "Lab\nUser", "Abc23456789xyzAB", 201, "bob.rdp")]));
+        Assert.Throws<ArgumentException>(() => DeploymentOutputs.WritePasswords(_temp.Path,
+            [new PasswordRow("bob", "bob", "Abc2345\r6789xyzAB", 201, "bob.rdp")]));
+        Assert.False(File.Exists(_temp.Combine("passwords.csv")));
+    }
+
+    [Fact]
+    public async Task Merge_waits_for_another_writers_lock()
+    {
+        var path = _temp.Combine("users.json");
+        Task merge;
+        using (new FileStream(path + ".lock", FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            merge = Task.Run(() => UserMapFile.Merge(path, [new UserMapping("alice", "pve1", 200)]));
+            await Task.Delay(300);
+            Assert.False(merge.IsCompleted);
+            Assert.False(File.Exists(path));
+        }
+
+        await merge.WaitAsync(TimeSpan.FromSeconds(60)); // hang guard only; Merge itself gives up after 30 s
+        Assert.Equal(200, UserMapFile.ReadMappings(path)["alice"]);
+    }
+
+    [Fact]
+    public void Concurrent_merges_and_removes_lose_nothing()
+    {
+        var path = _temp.Combine("users.json");
+        Parallel.For(0, 40, i => UserMapFile.Merge(path, [new UserMapping($"u{i}", "pve1", 1000 + i)]));
+        Parallel.For(0, 20, i => UserMapFile.Remove(path, [($"u{i}", 1000 + i)]));
+
+        var map = UserMapFile.ReadMappings(path);
+        Assert.Equal(20, map.Count);
+        Assert.All(Enumerable.Range(20, 20), i => Assert.Equal(1000 + i, map[$"u{i}"]));
+    }
+
+    [Fact]
+    public void Malformed_entries_are_not_mappings()
+    {
+        var path = _temp.Combine("users.json");
+        File.WriteAllText(path, """{"Hotlab":{"Users":{"a":{"Node":"pve1"},"b":{"VmId":"x"},"c":{"VmId":"7"},"d":5}}}""");
+
+        Assert.Equal(new Dictionary<string, int> { ["c"] = 7 }, UserMapFile.ReadMappings(path));
+        Assert.Equal(["a", "b", "d"], UserMapFile.FindMalformed(path, ["a", "b", "c", "d", "e"]));
+        Assert.Empty(UserMapFile.FindConflicts(path, ["a", "b", "d"], new Dictionary<string, IReadOnlySet<int>>()));
+    }
+
+    [Fact]
     public void AtomicFile_replaces_content_without_leaving_temp_files()
     {
         var path = _temp.Combine("f.txt");

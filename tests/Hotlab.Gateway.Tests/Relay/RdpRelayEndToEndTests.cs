@@ -14,7 +14,7 @@ public sealed class RdpRelayEndToEndTests
         var extra = RandomBytes(100_000, seed: 1);
 
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(cr.Concat(extra).ToArray(), SocketFlags.None);
+        await SendAllAsync(client, cr.Concat(extra).ToArray());
 
         using var backend = await h.AcceptBackendAsync();
         var received = await ReadExactlyAsync(backend, cr.Length + extra.Length);
@@ -23,7 +23,7 @@ public sealed class RdpRelayEndToEndTests
         Assert.Equal(101, h.Activator.LastTarget.VmId);
 
         var reply = RandomBytes(200_000, seed: 2);
-        await backend.SendAsync(reply, SocketFlags.None);
+        await SendAllAsync(backend, reply);
         Assert.Equal(reply, await ReadExactlyAsync(client, reply.Length));
     }
 
@@ -34,7 +34,7 @@ public sealed class RdpRelayEndToEndTests
         var cr = BuildConnectionRequest("alice");
 
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(cr, SocketFlags.None);
+        await SendAllAsync(client, cr);
         using var backend = await h.AcceptBackendAsync();
         await ReadExactlyAsync(backend, cr.Length);
 
@@ -42,7 +42,7 @@ public sealed class RdpRelayEndToEndTests
         await AssertEofAsync(backend);
 
         var late = RandomBytes(5000, seed: 3);
-        await backend.SendAsync(late, SocketFlags.None);
+        await SendAllAsync(backend, late);
         Assert.Equal(late, await ReadExactlyAsync(client, late.Length));
 
         backend.Shutdown(SocketShutdown.Send);
@@ -57,7 +57,7 @@ public sealed class RdpRelayEndToEndTests
         var cr = BuildConnectionRequest("alice");
 
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(cr, SocketFlags.None);
+        await SendAllAsync(client, cr);
         using var backend = await h.AcceptBackendAsync();
         await ReadExactlyAsync(backend, cr.Length);
 
@@ -65,7 +65,7 @@ public sealed class RdpRelayEndToEndTests
         await AssertEofAsync(client);
 
         var late = RandomBytes(5000, seed: 4);
-        await client.SendAsync(late, SocketFlags.None);
+        await SendAllAsync(client, late);
         Assert.Equal(late, await ReadExactlyAsync(backend, late.Length));
 
         client.Shutdown(SocketShutdown.Send);
@@ -80,7 +80,7 @@ public sealed class RdpRelayEndToEndTests
         var cr = BuildConnectionRequest("domain\\jo"); // mstsc 9-char truncation of DOMAIN-backslash-johnsmith
 
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(cr, SocketFlags.None);
+        await SendAllAsync(client, cr);
 
         using var backend = await h.AcceptBackendAsync();
         Assert.Equal(cr, await ReadExactlyAsync(backend, cr.Length));
@@ -92,7 +92,7 @@ public sealed class RdpRelayEndToEndTests
     {
         await using var h = await StartAsync();
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(BuildConnectionRequest("mallory"), SocketFlags.None);
+        await SendAllAsync(client, BuildConnectionRequest("mallory"));
 
         await AssertClosedAsync(client);
         Assert.Equal(0, h.Activator.Calls);
@@ -103,7 +103,7 @@ public sealed class RdpRelayEndToEndTests
     {
         await using var h = await StartAsync();
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(BuildConnectionRequest(null), SocketFlags.None);
+        await SendAllAsync(client, BuildConnectionRequest(null));
 
         await AssertClosedAsync(client);
         Assert.Equal(0, h.Activator.Calls);
@@ -114,7 +114,7 @@ public sealed class RdpRelayEndToEndTests
     {
         await using var h = await StartAsync();
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync("GET / HTTP/1.1\r\n\r\n"u8.ToArray(), SocketFlags.None);
+        await SendAllAsync(client, "GET / HTTP/1.1\r\n\r\n"u8.ToArray());
 
         await AssertClosedAsync(client);
         Assert.Equal(0, h.Activator.Calls);
@@ -137,7 +137,7 @@ public sealed class RdpRelayEndToEndTests
         h.Activator.Behaviour = (_, _) => throw new InvalidOperationException("boom");
 
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(BuildConnectionRequest("alice"), SocketFlags.None);
+        await SendAllAsync(client, BuildConnectionRequest("alice"));
 
         await AssertClosedAsync(client);
         Assert.Equal(1, h.Activator.Calls);
@@ -154,7 +154,7 @@ public sealed class RdpRelayEndToEndTests
         h.Activator.Behaviour = (_, _) => Task.FromResult(deadEp);
 
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(BuildConnectionRequest("alice"), SocketFlags.None);
+        await SendAllAsync(client, BuildConnectionRequest("alice"));
 
         await AssertClosedAsync(client);
     }
@@ -172,13 +172,13 @@ public sealed class RdpRelayEndToEndTests
         var extra = RandomBytes(1000, seed: 5);
 
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(cr, SocketFlags.None);
-        await client.SendAsync(extra, SocketFlags.None); // arrives while activation is pending
+        await SendAllAsync(client, cr);
+        await SendAllAsync(client, extra); // arrives while activation is pending
 
         using var backend = await h.AcceptBackendAsync();
         Assert.Equal(cr.Concat(extra).ToArray(), await ReadExactlyAsync(backend, cr.Length + extra.Length));
 
-        await backend.SendAsync(extra, SocketFlags.None);
+        await SendAllAsync(backend, extra);
         Assert.Equal(extra, await ReadExactlyAsync(client, extra.Length));
     }
 
@@ -190,7 +190,7 @@ public sealed class RdpRelayEndToEndTests
         {
             var cr = BuildConnectionRequest("alice");
             using var client = await h.ConnectClientAsync();
-            await client.SendAsync(cr, SocketFlags.None);
+            await SendAllAsync(client, cr);
             using var backend = await h.AcceptBackendAsync();
             await ReadExactlyAsync(backend, cr.Length);
             Assert.Equal(1, h.Service.ActiveConnections);
@@ -216,7 +216,7 @@ public sealed class RdpRelayEndToEndTests
         h.Activator.Behaviour = (_, _) => release.Task;
 
         using var first = await h.ConnectClientAsync();
-        await first.SendAsync(BuildConnectionRequest("alice"), SocketFlags.None);
+        await SendAllAsync(first, BuildConnectionRequest("alice"));
         await WaitUntilAsync(() => h.Activator.Calls == 1);
 
         using var second = await h.ConnectClientAsync();

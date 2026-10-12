@@ -13,3 +13,8 @@ passwords.csv
 *.rdp
 deployment.json
 appsettings.*.json
+
+# Added by ggshield
+.cache_ggshield
+/out/
+TestResults/

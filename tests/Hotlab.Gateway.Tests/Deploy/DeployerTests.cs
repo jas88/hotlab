@@ -109,12 +109,13 @@ public sealed class DeployerTests : IDisposable
     [Fact]
     public async Task Clones_run_sequentially_and_provisioning_in_bounded_parallel()
     {
-        _backend.StartDelay = TimeSpan.FromMilliseconds(100);
+        _backend.StartRendezvous = 2; // each start waits until two are in flight
         var request = Request(Out, "u1", "u2", "u3", "u4", "u5", "u6") with { Parallel = 2 };
 
         Assert.Equal(0, (await DeployAsync(_backend, request)).Code);
 
         Assert.Equal(1, _backend.MaxConcurrentClones);
+        Assert.Equal(2, _backend.MaxConcurrentStarts); // parallel, but bounded
         Assert.InRange(_backend.MaxRunning, 1, 2);
         Assert.Equal(6, _backend.PasswordSets.Count);
     }

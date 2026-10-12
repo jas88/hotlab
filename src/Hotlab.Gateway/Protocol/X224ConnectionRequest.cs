@@ -19,6 +19,7 @@ public sealed record X224ConnectionRequest(
     private const byte NegotiationRequestType = 0x01;
     private const int NegotiationRequestLength = 8;
     private const byte CorrelationInfoPresent = 0x08;
+    private const byte CorrelationInfoType = 0x06; // TYPE_RDP_CORRELATION_INFO
     private const int CorrelationInfoLength = 36;
     private const int MaxIdentityLines = 2;
 
@@ -112,6 +113,14 @@ public sealed record X224ConnectionRequest(
             int expectedTrailer = (flags & CorrelationInfoPresent) != 0 ? CorrelationInfoLength : 0;
             if (variable.Length != expectedTrailer)
                 return false;
+
+            // RDP_NEG_CORRELATION_INFO (2.2.1.1.2): type MUST be TYPE_RDP_CORRELATION_INFO
+            // (0x06) and length MUST be 0x0024 (little-endian). The flags, correlationId and
+            // reserved fields don't affect framing and are forwarded unchecked.
+            if (expectedTrailer != 0
+                && (variable[0] != CorrelationInfoType
+                    || BinaryPrimitives.ReadUInt16LittleEndian(variable[2..]) != CorrelationInfoLength))
+                return false;
         }
 
         request = new X224ConnectionRequest(cookie, routingToken, requestedProtocols);
@@ -120,7 +129,8 @@ public sealed record X224ConnectionRequest(
 
     /// <summary>
     /// Reduces an mstshash cookie value to a bare lowercase username, stripping any
-    /// DOMAIN\ prefix or @realm suffix. Null if nothing usable remains.
+    /// DOMAIN\ prefix or @realm suffix. Null if nothing usable remains or the value contains
+    /// non-ASCII characters.
     /// </summary>
     /// <remarks>
     /// Truncation: Windows mstsc is widely reported to truncate the mstshash identifier to
@@ -147,7 +157,11 @@ public sealed record X224ConnectionRequest(
             user = user[..at];
 
         user = user.Trim();
-        return user.IsEmpty ? null : user.ToString().ToLowerInvariant();
+        // Reject non-ASCII before lowercasing: ToLowerInvariant maps some non-ASCII
+        // characters to ASCII (U+212A KELVIN SIGN becomes 'k').
+        if (user.IsEmpty || !Ascii.IsValid(user))
+            return null;
+        return user.ToString().ToLowerInvariant();
     }
 
     private static bool IsPrintableAscii(ReadOnlySpan<byte> bytes)

@@ -15,7 +15,7 @@ public static class DeployCommand
     /// <summary>The verb that selects this command as the first program argument.</summary>
     public const string Name = "deploy";
 
-    /// <summary>Runs the command. Returns the process exit code (0 success, 1 failure/config error, 2 usage error).</summary>
+    /// <summary>Runs the command. Returns the process exit code (0 success or --help, 1 failure/config error, 2 usage error).</summary>
     /// <param name="args">Arguments after the verb.</param>
     /// <param name="configuration">Gateway configuration.</param>
     /// <param name="stdout">Progress and summary.</param>
@@ -36,8 +36,12 @@ public static class DeployCommand
         var request = DeployArgs.Parse(args, out var error);
         if (request is null)
         {
-            if (error.Length > 0)
-                stderr.WriteLine(error);
+            if (error.Length == 0)
+            {
+                stdout.WriteLine(DeployArgs.Usage); // --help
+                return 0;
+            }
+            stderr.WriteLine(error);
             stderr.WriteLine(DeployArgs.Usage);
             return 2;
         }
@@ -46,6 +50,11 @@ public static class DeployCommand
         configuration.GetSection(RoutingTokenOptions.SectionName).Bind(tokenOptions);
         var timings = new DeployTimings();
         configuration.GetSection(DeployTimings.SectionName).Bind(timings);
+        if (OptionsValidation.Combine(tokenOptions.Validate(), timings.Validate()) is { } invalid)
+        {
+            stderr.WriteLine(invalid);
+            return 1;
+        }
 
         RoutingTokenService tokens;
         IDeployBackend backend;

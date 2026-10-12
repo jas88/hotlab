@@ -16,7 +16,7 @@ public static class MintRdpCommand
 
     private const string Usage =
         "Usage: Hotlab.Gateway mint-rdp <user> --address <gateway host[:port]> [--lifetime 8h]\n" +
-        "  --lifetime accepts <n>d|h|m|s or a TimeSpan (e.g. 08:00:00); default Hotlab:Tokens:DefaultLifetime.";
+        "  --lifetime accepts <n>d|h|m|s or a TimeSpan (e.g. 08:00:00), at most 3650d; default Hotlab:Tokens:DefaultLifetime.";
 
     /// <summary>Runs the command. Returns the process exit code (0 success, 1 config error, 2 usage error).</summary>
     /// <param name="args">Arguments after the verb.</param>
@@ -42,6 +42,11 @@ public static class MintRdpCommand
 
         var options = new RoutingTokenOptions();
         configuration.GetSection(RoutingTokenOptions.SectionName).Bind(options);
+        if (options.Validate() is { } configError)
+        {
+            stderr.WriteLine(configError);
+            return 1;
+        }
 
         string token;
         try
@@ -123,7 +128,14 @@ public static class MintRdpCommand
         return true;
     }
 
-    /// <summary>Parses <c>8h</c>, <c>30m</c>, <c>90s</c>, <c>1d</c>, or a <see cref="TimeSpan"/> string.</summary>
+    /// <summary>Longest lifetime <see cref="TryParseLifetime"/> accepts (10 years).</summary>
+    public static readonly TimeSpan MaxLifetime = TimeSpan.FromDays(3650);
+
+    /// <summary>
+    /// Parses <c>8h</c>, <c>30m</c>, <c>90s</c>, <c>1d</c>, or a <see cref="TimeSpan"/> string.
+    /// Returns false for anything that is not positive and at most <see cref="MaxLifetime"/>
+    /// (including values too large to represent), never throws for any text.
+    /// </summary>
     public static bool TryParseLifetime(string text, out TimeSpan lifetime)
     {
         ArgumentNullException.ThrowIfNull(text);
@@ -133,23 +145,27 @@ public static class MintRdpCommand
             double.TryParse(text.AsSpan(0, text.Length - 1), NumberStyles.AllowDecimalPoint,
                 CultureInfo.InvariantCulture, out double n))
         {
-            TimeSpan? parsed = char.ToLowerInvariant(text[^1]) switch
+            double? unitSeconds = char.ToLowerInvariant(text[^1]) switch
             {
-                'd' => TimeSpan.FromDays(n),
-                'h' => TimeSpan.FromHours(n),
-                'm' => TimeSpan.FromMinutes(n),
-                's' => TimeSpan.FromSeconds(n),
+                'd' => 86400,
+                'h' => 3600,
+                'm' => 60,
+                's' => 1,
                 _ => null,
             };
-            if (parsed is null)
+            if (unitSeconds is null)
                 return false;
-            lifetime = parsed.Value;
+            // Range-check before converting: TimeSpan.FromSeconds throws on overflow/NaN.
+            double seconds = n * unitSeconds.Value;
+            if (!double.IsFinite(seconds) || seconds <= 0 || seconds > MaxLifetime.TotalSeconds)
+                return false;
+            lifetime = TimeSpan.FromSeconds(seconds);
         }
         else if (!TimeSpan.TryParse(text, CultureInfo.InvariantCulture, out lifetime))
         {
             return false;
         }
 
-        return lifetime > TimeSpan.Zero;
+        return lifetime > TimeSpan.Zero && lifetime <= MaxLifetime;
     }
 }

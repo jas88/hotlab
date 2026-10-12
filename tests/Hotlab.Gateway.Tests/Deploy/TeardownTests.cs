@@ -34,6 +34,7 @@ public sealed class TeardownTests : IDisposable
         Assert.DoesNotContain("hotlab-lab", _backend.Pools);
         Assert.Equal(["zed"], UserMapFile.ReadMappings(Target).Keys);
         Assert.False(File.Exists(Path.Combine(Out, DeploymentOutputs.PasswordsFile)));
+        Assert.Empty(Directory.GetFiles(Out, "*.rdp")); // they hold signed routing tokens
         Assert.All(Manifest(Out).Users, u => Assert.Equal(DeployStatus.Destroyed, u.Status));
         Assert.Contains("2 VM(s) removed, 0 remaining", result.Out, StringComparison.Ordinal);
     }
@@ -111,6 +112,83 @@ public sealed class TeardownTests : IDisposable
 
         Assert.Equal(2, result.Code);
         Assert.Contains("deployment.json", result.Err, StringComparison.Ordinal);
+        Assert.Empty(_backend.Calls);
+    }
+
+    [Fact]
+    public async Task Keeps_rdp_file_of_vm_that_survived()
+    {
+        await DeployAliceBobAsync();
+        _backend.Clone("alice").Tags.Remove("hotlab");
+
+        Assert.Equal(1, (await TeardownAsync(_backend, Out)).Code);
+
+        Assert.True(File.Exists(Path.Combine(Out, "alice.rdp")));
+        Assert.False(File.Exists(Path.Combine(Out, "bob.rdp")));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Users_file_target_that_is_the_output_users_json_is_not_clobbered(bool keepMappings)
+    {
+        var aliased = Path.Combine(Out, DeploymentOutputs.UsersJsonFile);
+        Directory.CreateDirectory(Out);
+        File.WriteAllText(aliased, """{"Hotlab":{"Users":{"zed":{"Node":"pve2","VmId":150}}}}""");
+        var request = Request(Out, "alice", "bob") with { UsersFileTarget = aliased };
+        Assert.Equal(0, (await DeployAsync(_backend, request)).Code);
+        Assert.Equal(3, UserMapFile.ReadMappings(aliased).Count); // deploy merged rather than overwrote
+
+        Assert.Equal(0, (await TeardownAsync(_backend, Out, keepMappings)).Code);
+
+        var expected = keepMappings ? new[] { "alice", "bob", "zed" } : ["zed"];
+        Assert.Equal(expected, UserMapFile.ReadMappings(aliased).Keys.Order());
+    }
+
+    [Fact]
+    public async Task Unreadable_passwords_file_is_reported_not_thrown()
+    {
+        await DeployAliceBobAsync();
+        File.WriteAllText(Path.Combine(Out, DeploymentOutputs.PasswordsFile), "user,guest_account,password,vmid,rdp_file\nbroken\n");
+
+        var result = await TeardownAsync(_backend, Out);
+
+        Assert.Equal(1, result.Code);
+        Assert.Contains("malformed", result.Err, StringComparison.Ordinal);
+        Assert.DoesNotContain(_backend.Calls, c => c.StartsWith("destroy", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Invalid_users_file_target_is_reported_not_thrown()
+    {
+        await DeployAliceBobAsync();
+        File.WriteAllText(Target, "[1,2]");
+
+        var result = await TeardownAsync(_backend, Out);
+
+        Assert.Equal(1, result.Code);
+        Assert.Contains("Could not update", result.Err, StringComparison.Ordinal);
+        Assert.Empty(Directory.GetFiles(Out, "*.rdp")); // local cleanup still happened
+        Assert.All(Manifest(Out).Users, u => Assert.Equal(DeployStatus.Destroyed, u.Status));
+    }
+
+    [Theory]
+    [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","users":null}""")]
+    [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","users":[null]}""")]
+    [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","users":[{"user":null,"status":"deployed"}]}""")]
+    [InlineData("""{"name":null,"node":"pve1","users":[]}""")]
+    public async Task Structurally_invalid_manifest_is_reported(string json)
+    {
+        Directory.CreateDirectory(Out);
+        File.WriteAllText(Path.Combine(Out, DeploymentManifest.FileName), json);
+
+        Assert.Throws<InvalidDataException>(() => DeploymentManifest.Load(Out));
+        var teardown = await TeardownAsync(_backend, Out);
+        var deploy = await DeployAsync(_backend, Request(Out, "alice"));
+
+        Assert.Equal(1, teardown.Code);
+        Assert.Equal(1, deploy.Code);
+        Assert.Contains("not a valid deployment manifest", deploy.Err, StringComparison.Ordinal);
         Assert.Empty(_backend.Calls);
     }
 }

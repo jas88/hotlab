@@ -107,4 +107,23 @@ public sealed class ConfigUserTargetResolverTests
             Assert.Equal(new VmTarget("pve1", 111), resolver.Resolve("alice"));
         }
     }
+
+    [Fact]
+    public void NonAsciiUsernames_DoNotAliasAsciiUsers()
+    {
+        var (resolver, _, sp) = Create(new()
+        {
+            ["Hotlab:Users:kate:Node"] = "pve1",
+            ["Hotlab:Users:kate:VmId"] = "101",
+            ["Hotlab:Users:\u212Aelvin:Node"] = "pve1", // KELVIN SIGN, lowercases to 'k'
+            ["Hotlab:Users:\u212Aelvin:VmId"] = "102",
+        });
+        using (sp)
+        {
+            Assert.Null(resolver.Resolve("\u212Aate"));
+            Assert.Null(resolver.Resolve("\u212Aelvin"));
+            // A 9-character truncated cookie "lab\kelvi" must not prefix-match the non-ASCII key.
+            Assert.Equal(CookieMatch.NotFound, resolver.ResolveCookie("lab\\kelvi").Match);
+        }
+    }
 }

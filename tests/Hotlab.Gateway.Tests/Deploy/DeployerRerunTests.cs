@@ -151,6 +151,7 @@ public sealed class DeployerRerunTests : IDisposable
         Assert.Equal(1, result.Code);
         Assert.True(_backend.Vms.ContainsKey(200));
         Assert.DoesNotContain("destroy 200", _backend.Calls);
+        Assert.Null(Manifest(Out).Find("alice")!.VmId); // the rejected id is not recorded as ours
     }
 
     [Fact]
@@ -194,5 +195,60 @@ public sealed class DeployerRerunTests : IDisposable
 
         Assert.Equal(0, (await DeployAsync(_backend, request with { Users = ["alice", "bob"] })).Code);
         Assert.Equal(2, UserMapFile.ReadMappings(Target).Count);
+    }
+
+    [Fact]
+    public async Task Address_change_is_refused_unless_forced_and_then_regenerates_rdp_files()
+    {
+        Assert.Equal(0, (await DeployAsync(_backend, Request(Out, "alice"))).Code);
+        var moved = Request(Out, "alice", "bob") with { Address = "new-gw.example.org:3389" };
+
+        var refused = await DeployAsync(_backend, moved);
+        Assert.Equal(2, refused.Code);
+        Assert.Contains("--force", refused.Err, StringComparison.Ordinal);
+        Assert.DoesNotContain(_backend.Calls, c => c.Contains("-bob", StringComparison.Ordinal));
+        Assert.Equal("lab.example.org:3389", Manifest(Out).Address);
+
+        var forced = await DeployAsync(_backend, moved with { Force = true });
+        Assert.Equal(0, forced.Code);
+        Assert.Equal("new-gw.example.org:3389", Manifest(Out).Address);
+        foreach (var user in new[] { "alice", "bob" })
+        {
+            Assert.StartsWith("full address:s:new-gw.example.org:3389\r\n",
+                File.ReadAllText(Path.Combine(Out, $"{user}.rdp")), StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public async Task Users_file_target_change_is_refused()
+    {
+        var request = Request(Out, "alice") with { UsersFileTarget = Target };
+        Assert.Equal(0, (await DeployAsync(_backend, request)).Code);
+
+        var other = _temp.Combine("other", "users.json");
+        var result = await DeployAsync(_backend, request with { UsersFileTarget = other, Force = true });
+
+        Assert.Equal(2, result.Code);
+        Assert.Contains("--users-file-target", result.Err, StringComparison.Ordinal);
+        Assert.False(File.Exists(other));
+        Assert.Equal(Target, Manifest(Out).UsersFileTarget);
+        // The same target, spelt differently, is not a change.
+        var same = Path.Combine(_temp.Path, "gateway", "..", "gateway", "users.json");
+        Assert.Equal(0, (await DeployAsync(_backend, request with { UsersFileTarget = same })).Code);
+    }
+
+    [Fact]
+    public async Task Malformed_mapping_is_overwritten_with_a_warning_not_a_conflict()
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(Target)!);
+        File.WriteAllText(Target, """{"Hotlab":{"Users":{"alice":{"Node":"pve2"},"bob":"junk"}}}""");
+
+        var result = await DeployAsync(_backend, Request(Out, "alice", "bob") with { UsersFileTarget = Target });
+
+        Assert.Equal(0, result.Code);
+        Assert.Contains("malformed mapping for alice", result.Err, StringComparison.Ordinal);
+        Assert.Contains("malformed mapping for bob", result.Err, StringComparison.Ordinal);
+        Assert.Equal(_backend.Clone("alice").VmId, UserMapFile.ReadMappings(Target)["alice"]);
+        Assert.Equal(_backend.Clone("bob").VmId, UserMapFile.ReadMappings(Target)["bob"]);
     }
 }

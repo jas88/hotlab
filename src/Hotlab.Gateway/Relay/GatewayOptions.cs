@@ -1,4 +1,7 @@
+using System.Globalization;
 using System.Net;
+using Hotlab.Gateway.Configuration;
+using Hotlab.Gateway.Protocol;
 
 namespace Hotlab.Gateway.Relay;
 
@@ -20,8 +23,17 @@ public sealed class GatewayOptions
     /// <summary>Timeout for the TCP connect to the guest once it is reported ready.</summary>
     public TimeSpan BackendConnectTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
-    /// <summary>Maximum concurrent connections; 0 or less means unlimited. Excess connections are closed.</summary>
-    public int MaxConnections { get; set; }
+    /// <summary>Default for <see cref="MaxConnections"/>.</summary>
+    public const int DefaultMaxConnections = 256;
+
+    /// <summary>Largest TPKT length (16-bit length field).</summary>
+    public const int MaxTpktLength = ushort.MaxValue;
+
+    /// <summary>
+    /// Maximum concurrent connections (default <see cref="DefaultMaxConnections"/>); excess
+    /// connections are closed. 0 means unlimited and must be chosen explicitly.
+    /// </summary>
+    public int MaxConnections { get; set; } = DefaultMaxConnections;
 
     /// <summary>
     /// How long the relay keeps the other direction open after one side half-closes.
@@ -35,4 +47,27 @@ public sealed class GatewayOptions
         IPEndPoint.TryParse(Listen, out var ep)
             ? ep
             : throw new FormatException($"Hotlab:Gateway:Listen '{Listen}' is not a valid IP endpoint.");
+
+    /// <summary>
+    /// Checks the settings: a parseable <see cref="Listen"/> endpoint, a
+    /// <see cref="MaxFirstPduBytes"/> between <see cref="TpktReader.MinimumLength"/> and
+    /// <see cref="MaxTpktLength"/>, positive timeouts and a non-negative
+    /// <see cref="MaxConnections"/>. Returns an error message, or null when valid.
+    /// </summary>
+    public string? Validate() =>
+        OptionsValidation.Combine(
+            IPEndPoint.TryParse(Listen ?? "", out _)
+                ? null
+                : $"{SectionName}:Listen '{Listen}' is not a valid IP endpoint (e.g. 0.0.0.0:3389 or [::]:3389).",
+            MaxFirstPduBytes is < TpktReader.MinimumLength or > MaxTpktLength
+                ? string.Create(CultureInfo.InvariantCulture,
+                    $"{SectionName}:MaxFirstPduBytes must be between {TpktReader.MinimumLength} and {MaxTpktLength} (got {MaxFirstPduBytes}).")
+                : null,
+            MaxConnections < 0
+                ? string.Create(CultureInfo.InvariantCulture,
+                    $"{SectionName}:MaxConnections must be 0 (unlimited) or positive (got {MaxConnections}).")
+                : null,
+            OptionsValidation.CheckTimeout($"{SectionName}:FirstPduTimeout", FirstPduTimeout),
+            OptionsValidation.CheckTimeout($"{SectionName}:BackendConnectTimeout", BackendConnectTimeout),
+            OptionsValidation.CheckTimeout($"{SectionName}:HalfCloseTimeout", HalfCloseTimeout));
 }

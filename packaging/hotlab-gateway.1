@@ -1,0 +1,69 @@
+.TH HOTLAB-GATEWAY 1 "@DATE@" "hotlab @VERSION@" "User Commands"
+.SH NAME
+hotlab-gateway \- RDP gateway that starts Proxmox lab VMs on demand
+.SH SYNOPSIS
+.B hotlab-gateway
+.br
+.B hotlab-gateway mint-rdp
+.I user
+.B \-\-address
+.I host[:port]
+.RI [ options ]
+.br
+.B hotlab-gateway deploy
+.RI [ options ]
+.br
+.B hotlab-gateway teardown
+.B \-\-out
+.I dir
+.RI [ options ]
+.SH DESCRIPTION
+Without a verb,
+.B hotlab-gateway
+runs the RDP listener (normally as
+.BR hotlab-gateway.service ).
+It reads the routing token or user name from each client's first RDP packet,
+starts the user's Proxmox VE virtual machine if needed, and relays the
+connection to it.
+.PP
+.B mint-rdp
+writes an .rdp file carrying a signed routing token.
+.B deploy
+creates one clone of a source VM per user, with guest accounts and .rdp files;
+.B teardown
+removes a deployment again. Run a verb without arguments for its options.
+.SH CONFIGURATION
+Settings are read, later sources winning, from
+.IR /usr/lib/hotlab-gateway/appsettings.json ,
+.I $HOTLAB_CONFIG_DIR/appsettings.json
+(default
+.IR /etc/hotlab/appsettings.json ),
+systemd credentials in
+.I $CREDENTIALS_DIRECTORY
+(a file named
+.B Hotlab__Proxmox__TokenSecret
+supplies
+.BR Hotlab:Proxmox:TokenSecret ),
+environment variables such as
+.BR Hotlab__Tokens__SigningKey ,
+and the command line.
+The user map is reloaded from
+.B $HOTLAB_USERS_FILE
+.RI ( /etc/hotlab/users.json
+for the service) when it changes.
+.SH FILES
+.TP
+.I /etc/hotlab/appsettings.json
+Site settings.
+.TP
+.I /etc/hotlab/users.json
+User-to-VM map, maintained by
+.BR "deploy \-\-users\-file\-target" .
+.TP
+.I /etc/credstore.encrypted/
+Encrypted secrets loaded by the service (see
+.BR systemd-creds (1)).
+.SH SEE ALSO
+.BR systemd-creds (1),
+.BR journalctl (1),
+.I /usr/share/doc/hotlab-gateway/README.md.gz

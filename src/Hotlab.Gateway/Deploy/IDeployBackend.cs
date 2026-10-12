@@ -27,12 +27,21 @@ public interface IDeployBackend
     /// <summary>The pool's members.</summary>
     Task<IReadOnlyList<ProxmoxPoolMember>> GetPoolMembersAsync(string pool, CancellationToken ct);
 
-    /// <summary>Clones <paramref name="sourceVmId"/> into <paramref name="pool"/> and waits; returns the task exit status.</summary>
-    Task<string> CloneAsync(
+    /// <summary>
+    /// Starts cloning <paramref name="sourceVmId"/> into <paramref name="pool"/>. Returns the task
+    /// id once Proxmox has accepted the request (throws if it was rejected, e.g. the VMID is taken).
+    /// </summary>
+    Task<string> StartCloneAsync(
         string node, int sourceVmId, int newVmId, string name, bool fullClone, string pool, CancellationToken ct);
 
-    /// <summary>The VM's tags.</summary>
+    /// <summary>Waits for a task started by <see cref="StartCloneAsync"/>; returns its exit status.</summary>
+    Task<string> WaitForTaskAsync(string node, string taskId, CancellationToken ct);
+
+    /// <summary>The VM's tags (case-insensitive set).</summary>
     Task<IReadOnlySet<string>> GetTagsAsync(string node, int vmId, CancellationToken ct);
+
+    /// <summary>The VM's configured name, or null if it has none.</summary>
+    Task<string?> GetNameAsync(string node, int vmId, CancellationToken ct);
 
     /// <summary>Replaces the VM's tags.</summary>
     Task SetTagsAsync(string node, int vmId, IReadOnlyCollection<string> tags, CancellationToken ct);

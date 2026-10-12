@@ -139,15 +139,17 @@ public sealed class RoutingTokenService
 
     private static string NormalizeUser(string user)
     {
-        var normalized = user.Trim().ToLowerInvariant();
-        if (normalized.Length == 0)
+        // Validate before lowercasing: ToLowerInvariant maps some non-ASCII characters to
+        // ASCII (U+212A KELVIN SIGN becomes 'k'), which would let them through the check.
+        var trimmed = user.Trim();
+        if (trimmed.Length == 0)
             throw new ArgumentException("User must not be empty.", nameof(user));
-        if (normalized.Length > MaxUserLength)
+        if (trimmed.Length > MaxUserLength)
             throw new ArgumentException($"User must be at most {MaxUserLength} characters.", nameof(user));
-        if (!IsValidUser(normalized))
+        if (!IsValidUser(trimmed))
             throw new ArgumentException(
                 "User must be printable ASCII and must not contain ':'.", nameof(user));
-        return normalized;
+        return trimmed.ToLowerInvariant();
     }
 
     private static bool IsValidUser(string user)

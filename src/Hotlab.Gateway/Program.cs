@@ -11,6 +11,8 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 // Configuration sources (later wins): appsettings.json, appsettings.{Environment}.json,
+// $HOTLAB_CONFIG_DIR/appsettings.json (default /etc/hotlab, if that directory exists),
+// systemd credentials in $CREDENTIALS_DIRECTORY (file name = key, "__" for ":"),
 // environment variables (e.g. Hotlab__Proxmox__TokenSecret), command line.
 // Production note: the Proxmox token secret and the routing-token signing key
 // (Hotlab__Tokens__SigningKey) are meant to arrive via systemd credentials
@@ -44,11 +46,13 @@ var config = builder.Configuration;
 // Deployment-maintained user map (deploy --users-file-target), reloaded on change.
 var usersFile = UsersFileConfiguration.Add(config, config);
 
-builder.Services.Configure<GatewayOptions>(config.GetSection(GatewayOptions.SectionName));
+// Settings are validated when the host starts (ValidateOnStart), so a bad value stops the
+// gateway with a clear message instead of failing on the first connection.
+builder.Services.AddValidatedOptions<GatewayOptions>(config.GetSection(GatewayOptions.SectionName), o => o.Validate());
 builder.Services.Configure<UserMapOptions>(config.GetSection(UserMapOptions.SectionName));
-builder.Services.Configure<VmActivatorOptions>(config.GetSection("Hotlab:Activation"));
-builder.Services.Configure<ProxmoxConnectionOptions>(config.GetSection(ProxmoxConnectionOptions.SectionName));
-builder.Services.Configure<RoutingTokenOptions>(config.GetSection(RoutingTokenOptions.SectionName));
+builder.Services.AddValidatedOptions<VmActivatorOptions>(config.GetSection(VmActivatorOptions.SectionName), o => o.Validate());
+builder.Services.AddValidatedOptions<ProxmoxConnectionOptions>(config.GetSection(ProxmoxConnectionOptions.SectionName), o => o.Validate());
+builder.Services.AddValidatedOptions<RoutingTokenOptions>(config.GetSection(RoutingTokenOptions.SectionName), o => o.Validate());
 
 builder.Services.AddSingleton(sp =>
 {
@@ -79,9 +83,13 @@ if (usersFile is not null)
 await host.RunAsync().ConfigureAwait(false);
 return 0;
 
-static HostApplicationBuilder CreateBuilder(string[] args) =>
-    Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
+static HostApplicationBuilder CreateBuilder(string[] args)
+{
+    var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
     {
         Args = args,
         ContentRootPath = AppContext.BaseDirectory,
     });
+    SystemConfigurationSources.Add(builder.Configuration);
+    return builder;
+}

@@ -60,9 +60,15 @@ public static class AtomicFile
         if (Directory.Exists(path))
             return false;
         if (OperatingSystem.IsWindows())
+        {
             Directory.CreateDirectory(path);
+        }
         else
+        {
             Directory.CreateDirectory(path, PrivateDirectory);
+            // The create mode is filtered by the umask (which may even strip owner bits); set it explicitly.
+            File.SetUnixFileMode(path, PrivateDirectory);
+        }
         return true;
     }
 

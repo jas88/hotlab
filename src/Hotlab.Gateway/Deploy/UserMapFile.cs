@@ -7,6 +7,8 @@ namespace Hotlab.Gateway.Deploy;
 /// The gateway's users file (<c>Hotlab:UsersFile</c>): a JSON configuration file whose
 /// <c>Hotlab:Users</c> section maps users to VMs. Edits preserve everything else in the file
 /// and are written atomically, so the gateway's reload-on-change never sees a partial file.
+/// Read-modify-write edits hold an exclusive lock on <c>&lt;path&gt;.lock</c>, so concurrent
+/// deploy/teardown runs (in any process) cannot lose each other's changes.
 /// </summary>
 public static class UserMapFile
 {
@@ -19,20 +21,27 @@ public static class UserMapFile
         CommentHandling = JsonCommentHandling.Skip,
     };
 
-    /// <summary>Reads the user → VMID map (case-insensitive keys); empty when the file is missing.</summary>
-    /// <exception cref="InvalidDataException">The file is not a JSON object.</exception>
-    public static Dictionary<string, int> ReadMappings(string path)
-    {
-        var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        if (Load(path) is not { } root || UsersObject(root, create: false) is not { } users)
-            return result;
+    /// <summary>How long <see cref="Merge"/> and <see cref="Remove"/> wait for another writer's lock.</summary>
+    private static readonly TimeSpan LockTimeout = TimeSpan.FromSeconds(30);
 
-        foreach (var (user, entry) in users)
-        {
-            var vmId = entry is JsonObject o ? Property(o, "VmId") : null;
-            result[user] = vmId is JsonValue v && TryGetInt(v, out int id) ? id : 0;
-        }
-        return result;
+    /// <summary>
+    /// Reads the user → VMID map (case-insensitive keys); empty when the file is missing.
+    /// Malformed entries (no parseable VmId) are left out; see <see cref="FindMalformed"/>.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The file is not a JSON object.</exception>
+    public static Dictionary<string, int> ReadMappings(string path) => ReadMappings(Load(path));
+
+    /// <summary>
+    /// Those of <paramref name="users"/> whose entry exists but has no parseable VmId. They are
+    /// not conflicts: a merge simply overwrites them.
+    /// </summary>
+    public static IReadOnlyList<string> FindMalformed(string path, IEnumerable<string> users)
+    {
+        ArgumentNullException.ThrowIfNull(users);
+        if (Load(path) is not { } root || UsersObject(root, create: false) is not { } map)
+            return [];
+        var valid = ReadMappings(root);
+        return users.Where(u => Property(map, u) is not null && !valid.ContainsKey(u)).ToList();
     }
 
     /// <summary>
@@ -55,6 +64,7 @@ public static class UserMapFile
     public static void Merge(string path, IEnumerable<UserMapping> mappings)
     {
         ArgumentNullException.ThrowIfNull(mappings);
+        using var _ = AcquireLock(path);
         var root = Load(path) ?? new JsonObject();
         var users = UsersObject(root, create: true)!;
         foreach (var m in mappings)
@@ -72,10 +82,13 @@ public static class UserMapFile
     public static int Remove(string path, IEnumerable<(string User, int VmId)> mappings)
     {
         ArgumentNullException.ThrowIfNull(mappings);
+        if (!File.Exists(path))
+            return 0;
+        using var _ = AcquireLock(path);
         if (Load(path) is not { } root || UsersObject(root, create: false) is not { } users)
             return 0;
 
-        var current = ReadMappings(path);
+        var current = ReadMappings(root);
         int removed = 0;
         foreach (var (user, vmId) in mappings)
         {
@@ -85,6 +98,61 @@ public static class UserMapFile
         if (removed > 0)
             Save(path, root);
         return removed;
+    }
+
+    private static Dictionary<string, int> ReadMappings(JsonObject? root)
+    {
+        var result = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        if (root is null || UsersObject(root, create: false) is not { } users)
+            return result;
+
+        foreach (var (user, entry) in users)
+        {
+            var vmId = entry is JsonObject o ? Property(o, "VmId") : null;
+            if (vmId is JsonValue v && TryGetInt(v, out int id))
+                result[user] = id;
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Takes an exclusive lock on <c>&lt;path&gt;.lock</c> (an OS file lock, released if the process
+    /// dies), retrying with backoff up to <see cref="LockTimeout"/>. The lock file is left in place.
+    /// </summary>
+    /// <exception cref="IOException">The lock could not be taken in time.</exception>
+    private static FileStream AcquireLock(string path)
+    {
+        var lockPath = Path.GetFullPath(path) + ".lock";
+        var dir = Path.GetDirectoryName(lockPath);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
+        var options = new FileStreamOptions
+        {
+            Mode = FileMode.OpenOrCreate,
+            Access = FileAccess.ReadWrite,
+            Share = FileShare.None,
+        };
+        if (!OperatingSystem.IsWindows())
+            options.UnixCreateMode = NewFileMode;
+
+        var deadline = DateTime.UtcNow + LockTimeout;
+        var delay = TimeSpan.FromMilliseconds(10);
+        while (true)
+        {
+            try
+            {
+                return new FileStream(lockPath, options);
+            }
+            catch (IOException) when (DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(delay);
+                delay = TimeSpan.FromMilliseconds(Math.Min(delay.TotalMilliseconds * 2, 500));
+            }
+            catch (IOException ex)
+            {
+                throw new IOException($"Timed out after {LockTimeout} waiting for {lockPath} (another deploy or teardown?).", ex);
+            }
+        }
     }
 
     private static JsonObject? Load(string path)

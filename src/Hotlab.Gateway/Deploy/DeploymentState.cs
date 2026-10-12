@@ -21,6 +21,9 @@ internal sealed class DeploymentState
 
     public DeploymentManifest Manifest { get; }
 
+    /// <summary>The output directory.</summary>
+    public string OutDir => _dir;
+
     public Dictionary<string, PasswordRow> Passwords { get; }
 
     public DeployedUser GetOrAdd(string user)

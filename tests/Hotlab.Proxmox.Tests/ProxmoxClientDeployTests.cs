@@ -102,6 +102,19 @@ public class ProxmoxClientDeployTests
         Assert.Equal("/api2/json/cluster/resources?type=vm", handler.Requests[0].Path);
     }
 
+    [Theory]
+    [InlineData("""[{"type":"qemu","vmid":100}]""")]
+    [InlineData("""[{"type":"qemu","vmid":100,"node":""}]""")]
+    [InlineData("""[{"type":"qemu","vmid":100,"node":null}]""")]
+    public async Task FindVmNode_rejects_vm_listed_without_node(string resources)
+    {
+        var (client, handler) = Create();
+        using var _ = client;
+        handler.EnqueueData(resources);
+
+        await Assert.ThrowsAsync<InvalidDataException>(() => client.FindVmNodeAsync(100));
+    }
+
     [Fact]
     public async Task CreatePool_posts_poolid_and_comment()
     {

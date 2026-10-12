@@ -5,7 +5,7 @@ using Hotlab.Proxmox;
 namespace Hotlab.Gateway.Tests.Deploy;
 
 /// <summary>In-memory Proxmox cluster for deployment tests.</summary>
-internal sealed class FakeDeployBackend : IDeployBackend
+internal sealed partial class FakeDeployBackend : IDeployBackend
 {
     public const int SourceId = 9000;
     public const string Node = "pve1";
@@ -13,10 +13,13 @@ internal sealed class FakeDeployBackend : IDeployBackend
     private readonly Lock _lock = new();
     private readonly Dictionary<int, AgentExecStatus> _exec = [];
     private readonly HashSet<int> _polled = [];
+    private readonly Dictionary<string, (int VmId, string Exit)> _tasks = [];
+    private readonly TaskCompletionSource _startsOverlapped = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _nextId = 200;
     private int _pid;
     private int _activeClones;
     private int _running;
+    private int _activeStarts;
 
     public FakeDeployBackend(bool sourceIsTemplate = true)
     {
@@ -40,6 +43,15 @@ internal sealed class FakeDeployBackend : IDeployBackend
     /// <summary>Throws from set-user-password for these VM names.</summary>
     public HashSet<string> FailPasswordFor { get; } = [];
 
+    /// <summary>Throws a non-Proxmox exception from set-user-password for these VM names.</summary>
+    public HashSet<string> CrashPasswordFor { get; } = [];
+
+    /// <summary>Destroy exit status by VMID; default "OK" (the VM is only removed on "OK").</summary>
+    public Func<int, string>? DestroyExit { get; set; }
+
+    /// <summary>Runs after a VM is hard-stopped (e.g. to simulate the VMID being reused).</summary>
+    public Action<int>? AfterStop { get; set; }
+
     /// <summary>Guest agent never answers for these VM names.</summary>
     public HashSet<string> AgentDownFor { get; } = [];
 
@@ -52,6 +64,18 @@ internal sealed class FakeDeployBackend : IDeployBackend
 
     public int MaxConcurrentClones { get; private set; }
     public int MaxRunning { get; private set; }
+
+    /// <summary>
+    /// When set, each VM start waits (up to 30 s) until this many starts are in flight at once,
+    /// so a run that provisions sequentially never reaches it.
+    /// </summary>
+    public int? StartRendezvous { get; set; }
+
+    /// <summary>Most VM starts in flight at once.</summary>
+    public int MaxConcurrentStarts { get; private set; }
+
+    /// <summary>Runs after a clone task is accepted, before it is waited for (e.g. to simulate a race).</summary>
+    public Action<int>? AfterCloneAccepted { get; set; }
 
     public FakeVm Clone(string user) => Vms.Values.Single(v => v.Name.EndsWith("-" + user, StringComparison.Ordinal));
 
@@ -99,12 +123,13 @@ internal sealed class FakeDeployBackend : IDeployBackend
         Task.FromResult<IReadOnlyList<ProxmoxPoolMember>>(Vms.Values.Where(v => v.Pool == pool)
             .Select(v => new ProxmoxPoolMember($"qemu/{v.VmId}", "qemu", v.VmId, v.Node)).ToList());
 
-    public async Task<string> CloneAsync(
+    public async Task<string> StartCloneAsync(
         string node, int sourceVmId, int newVmId, string name, bool fullClone, string pool, CancellationToken ct)
     {
         int active = Interlocked.Increment(ref _activeClones);
         lock (_lock)
             MaxConcurrentClones = Math.Max(MaxConcurrentClones, active);
+        bool accepted = false;
         try
         {
             Calls.Enqueue($"clone {sourceVmId}->{newVmId} {name} full={fullClone} pool={pool}");
@@ -117,9 +142,30 @@ internal sealed class FakeDeployBackend : IDeployBackend
                 Accounts = new(source.Accounts),
             }))
             {
-                return "unable to create VM: config file already exists";
+                throw new ProxmoxApiException(System.Net.HttpStatusCode.InternalServerError, "POST", "clone",
+                    $"unable to create VM {newVmId}: config file already exists");
             }
-            return CloneExit?.Invoke(name) ?? "OK";
+            var upid = $"UPID:{node}:clone:{newVmId}";
+            lock (_lock)
+                _tasks[upid] = (newVmId, CloneExit?.Invoke(name) ?? "OK");
+            accepted = true;
+            AfterCloneAccepted?.Invoke(newVmId);
+            return upid;
+        }
+        finally
+        {
+            if (!accepted)
+                Interlocked.Decrement(ref _activeClones);
+        }
+    }
+
+    public async Task<string> WaitForTaskAsync(string node, string taskId, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(1, ct);
+            lock (_lock)
+                return _tasks[taskId].Exit;
         }
         finally
         {
@@ -128,11 +174,13 @@ internal sealed class FakeDeployBackend : IDeployBackend
     }
 
     public Task<IReadOnlySet<string>> GetTagsAsync(string node, int vmId, CancellationToken ct) =>
-        Task.FromResult<IReadOnlySet<string>>(Get(vmId).Tags.ToHashSet());
+        Task.FromResult<IReadOnlySet<string>>(Get(vmId).Tags.ToHashSet(StringComparer.OrdinalIgnoreCase));
+
+    public Task<string?> GetNameAsync(string node, int vmId, CancellationToken ct) => Task.FromResult<string?>(Get(vmId).Name);
 
     public Task SetTagsAsync(string node, int vmId, IReadOnlyCollection<string> tags, CancellationToken ct)
     {
-        Get(vmId).Tags = [.. tags];
+        Get(vmId).Tags = new(tags, StringComparer.OrdinalIgnoreCase);
         return Task.CompletedTask;
     }
 
@@ -147,10 +195,33 @@ internal sealed class FakeDeployBackend : IDeployBackend
         var vm = Get(vmId);
         vm.Status = "running";
         int running = Interlocked.Increment(ref _running);
+        int starts = Interlocked.Increment(ref _activeStarts);
         lock (_lock)
+        {
             MaxRunning = Math.Max(MaxRunning, running);
-        await Task.Delay(StartDelay, ct);
-        return "OK";
+            MaxConcurrentStarts = Math.Max(MaxConcurrentStarts, starts);
+        }
+        try
+        {
+            if (StartRendezvous is int wanted)
+            {
+                if (starts >= wanted)
+                    _startsOverlapped.TrySetResult();
+                try
+                {
+                    await _startsOverlapped.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+                }
+                catch (TimeoutException)
+                {
+                }
+            }
+            await Task.Delay(StartDelay, ct);
+            return "OK";
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeStarts);
+        }
     }
 
     public Task<string> ShutdownAsync(string node, int vmId, TimeSpan timeout, CancellationToken ct)
@@ -165,6 +236,7 @@ internal sealed class FakeDeployBackend : IDeployBackend
     {
         Calls.Enqueue($"stop {vmId}");
         PowerOff(Get(vmId));
+        AfterStop?.Invoke(vmId);
         return Task.FromResult("OK");
     }
 
@@ -173,65 +245,10 @@ internal sealed class FakeDeployBackend : IDeployBackend
         Calls.Enqueue($"destroy {vmId}");
         if (vmId == SourceId)
             throw new InvalidOperationException("Test bug: destroying the source");
-        Vms.TryRemove(vmId, out _);
-        return Task.FromResult("OK");
-    }
-
-    public Task<bool> AgentPingAsync(string node, int vmId, CancellationToken ct)
-    {
-        var vm = Get(vmId);
-        return Task.FromResult(vm.Status == "running" && !AgentDownFor.Contains(vm.Name));
-    }
-
-    public Task<AgentOsInfo> AgentGetOsInfoAsync(string node, int vmId, CancellationToken ct) =>
-        Task.FromResult(new AgentOsInfo(OsId, OsId));
-
-    public Task<int> AgentExecAsync(string node, int vmId, IReadOnlyList<string> command, CancellationToken ct)
-    {
-        ExecCommands.Enqueue(command);
-        var vm = Get(vmId);
-        AgentExecStatus result = command[0] switch
-        {
-            "id" when vm.Accounts.TryGetValue(command[^1], out int uid) => new(true, 0, null, $"{uid}\n", ""),
-            "id" => new(true, 1, null, "", $"id: '{command[^1]}': no such user\n"),
-            "useradd" => AddAccount(vm, command[^1]),
-            _ => new(true, 127, null, "", "not found"),
-        };
-        lock (_lock)
-        {
-            int pid = ++_pid;
-            _exec[pid] = result;
-            return Task.FromResult(pid);
-        }
-    }
-
-    public Task<AgentExecStatus> AgentExecStatusAsync(string node, int vmId, int pid, CancellationToken ct)
-    {
-        lock (_lock)
-        {
-            // First poll: still running; later polls: the result (exercises polling).
-            if (_polled.Add(pid))
-                return Task.FromResult(new AgentExecStatus(false, null, null, "", ""));
-            return Task.FromResult(_exec[pid]);
-        }
-    }
-
-    public Task AgentSetUserPasswordAsync(string node, int vmId, string user, string password, CancellationToken ct)
-    {
-        var vm = Get(vmId);
-        if (FailPasswordFor.Contains(vm.Name))
-            throw new ProxmoxApiException(System.Net.HttpStatusCode.InternalServerError, "POST", "set-user-password", "agent error");
-        if (!vm.Accounts.ContainsKey(user))
-            throw new ProxmoxApiException(System.Net.HttpStatusCode.InternalServerError, "POST", "set-user-password",
-                "chpasswd: user does not exist");
-        PasswordSets.Enqueue((vmId, user, password));
-        return Task.CompletedTask;
-    }
-
-    private static AgentExecStatus AddAccount(FakeVm vm, string user)
-    {
-        vm.Accounts[user] = 1001 + vm.Accounts.Count;
-        return new AgentExecStatus(true, 0, null, "", "");
+        var exit = DestroyExit?.Invoke(vmId) ?? "OK";
+        if (exit == "OK")
+            Vms.TryRemove(vmId, out _);
+        return Task.FromResult(exit);
     }
 
     private void PowerOff(FakeVm vm)
@@ -246,16 +263,4 @@ internal sealed class FakeDeployBackend : IDeployBackend
             ? vm
             : throw new ProxmoxApiException(System.Net.HttpStatusCode.InternalServerError, "GET", $"qemu/{vmId}",
                 "Configuration file does not exist");
-}
-
-internal sealed class FakeVm(int vmId, string node, string name)
-{
-    public int VmId { get; } = vmId;
-    public string Node { get; } = node;
-    public string Name { get; } = name;
-    public bool Template { get; init; }
-    public string? Pool { get; set; }
-    public string Status { get; set; } = "stopped";
-    public HashSet<string> Tags { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public ConcurrentDictionary<string, int> Accounts { get; init; } = new();
 }

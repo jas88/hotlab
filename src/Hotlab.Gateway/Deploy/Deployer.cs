@@ -51,14 +51,14 @@ public sealed partial class Deployer
                 _log.Error($"Warning: {outDir} is accessible to group/others; passwords.csv itself is 0600.");
 
             var manifest = DeploymentManifest.Load(outDir);
-            if (!TryResolveManifest(request, outDir, ref manifest, out var usage))
+            if (!TryResolveManifest(request, outDir, ref manifest, out bool addressChanged, out var usage))
             {
                 _log.Error(usage);
                 return 2;
             }
 
             state = new DeploymentState(outDir, manifest!, DeploymentOutputs.ReadPasswords(outDir), _time);
-            return await RunCoreAsync(request, state, ct).ConfigureAwait(false);
+            return await RunCoreAsync(request, state, addressChanged, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -75,17 +75,16 @@ public sealed partial class Deployer
         }
     }
 
-    private async Task<int> RunCoreAsync(DeployRequest request, DeploymentState state, CancellationToken ct)
+    private async Task<int> RunCoreAsync(
+        DeployRequest request, DeploymentState state, bool addressChanged, CancellationToken ct)
     {
         var manifest = state.Manifest;
         var toDeploy = new List<string>();
         foreach (var user in request.Users)
         {
-            var row = manifest.Find(user);
-            if (row is { Status: DeployStatus.Deployed, VmId: int vmId } &&
-                await _backend.FindVmNodeAsync(vmId, ct).ConfigureAwait(false) is not null)
+            if (await IsDeployedAsync(manifest, manifest.Find(user), ct).ConfigureAwait(false))
             {
-                _log.Info($"{user}: already deployed as VM {vmId}; skipping.");
+                _log.Info($"{user}: already deployed as VM {manifest.Find(user)!.VmId}; skipping.");
                 if (!state.Passwords.ContainsKey(user))
                     _log.Error($"Warning: {user}: no password on record in {DeploymentOutputs.PasswordsFile}.");
                 continue;
@@ -99,12 +98,17 @@ public sealed partial class Deployer
 
         if (toDeploy.Count > 0)
             await DeployUsersAsync(request, state, toDeploy, ct).ConfigureAwait(false);
+        if (addressChanged)
+            RegenerateRdpFiles(request, state, toDeploy);
 
         var mappings = manifest.Users
             .Where(u => u.Status == DeployStatus.Deployed && u.VmId is not null)
             .Select(u => new UserMapping(u.User, manifest.Node, u.VmId!.Value))
             .ToList();
-        DeploymentOutputs.WriteUsersJson(OutDirOf(request), mappings);
+        var usersJson = Path.Combine(OutDirOf(request), DeploymentOutputs.UsersJsonFile);
+        // When the gateway users file is the output users.json itself, the merge below writes it.
+        if (target is null || !DeploymentOutputs.SamePath(target, usersJson))
+            DeploymentOutputs.WriteUsersJson(OutDirOf(request), mappings);
         if (target is not null)
         {
             UserMapFile.Merge(target, mappings);
@@ -164,74 +168,6 @@ public sealed partial class Deployer
                 TaskScheduler.Default))).ConfigureAwait(false);
         }
         await Task.WhenAll(provisioning).ConfigureAwait(false);
-    }
-
-    private bool TryResolveManifest(
-        DeployRequest request, string outDir, ref DeploymentManifest? manifest, out string error)
-    {
-        error = "";
-        string? name = request.Name is null ? null : DeployNames.NormalizeDeploymentName(request.Name);
-        if (request.Name is not null && name is null)
-        {
-            error = $"Invalid --name '{request.Name}'.";
-            return false;
-        }
-        name ??= manifest?.Name ?? DeployNames.NormalizeDeploymentName(Path.GetFileName(outDir));
-        if (name is null)
-        {
-            error = "Cannot derive a deployment name from --out; pass --name.";
-            return false;
-        }
-
-        if (manifest is not null)
-        {
-            if (manifest.Name != name || manifest.SourceVmId != request.SourceVmId ||
-                !string.Equals(manifest.Node, request.Node, StringComparison.Ordinal))
-            {
-                error = string.Create(CultureInfo.InvariantCulture,
-                    $"{Path.Combine(outDir, DeploymentManifest.FileName)} belongs to deployment '{manifest.Name}' " +
-                    $"(source {manifest.SourceVmId} on {manifest.Node}); use a different --out.");
-                return false;
-            }
-        }
-        else
-        {
-            var now = _time.GetUtcNow();
-            manifest = new DeploymentManifest
-            {
-                Name = name,
-                SourceVmId = request.SourceVmId,
-                Node = request.Node,
-                Created = now,
-                Updated = now,
-            };
-        }
-
-        manifest.Pool = DeployNames.PoolId(name);
-        manifest.Address = request.Address;
-        return true;
-    }
-
-    private bool CheckConflicts(DeployRequest request, DeploymentManifest manifest, string target)
-    {
-        var users = request.Users
-            .Concat(manifest.Users.Where(u => u.Status == DeployStatus.Deployed).Select(u => u.User))
-            .Distinct(StringComparer.OrdinalIgnoreCase);
-        var owned = manifest.Users
-            .Where(u => u.VmId is not null)
-            .ToDictionary(u => u.User, u => (IReadOnlySet<int>)new HashSet<int> { u.VmId!.Value },
-                StringComparer.OrdinalIgnoreCase);
-        var conflicts = UserMapFile.FindConflicts(target, users, owned);
-        if (conflicts.Count == 0)
-            return true;
-        if (request.Force)
-        {
-            _log.Info($"--force: remapping {string.Join(", ", conflicts)} in {target}.");
-            return true;
-        }
-        _log.Error($"{target} already maps {string.Join(", ", conflicts)} to other VMs; " +
-            "nothing was deployed. Use --force to remap them.");
-        return false;
     }
 
     private int PrintSummary(DeployRequest request, DeploymentState state)

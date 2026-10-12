@@ -53,15 +53,40 @@ public sealed class DeploymentManifest
         var path = Path.Combine(dir, FileName);
         if (!File.Exists(path))
             return null;
+        DeploymentManifest manifest;
         try
         {
-            return JsonSerializer.Deserialize<DeploymentManifest>(File.ReadAllText(path), JsonOptions)
+            manifest = JsonSerializer.Deserialize<DeploymentManifest>(File.ReadAllText(path), JsonOptions)
                 ?? throw new InvalidDataException($"{path} is empty.");
         }
         catch (JsonException ex)
         {
             throw new InvalidDataException($"{path} is not a valid deployment manifest: {ex.Message}", ex);
         }
+        if (manifest.Validate() is { } problem)
+            throw new InvalidDataException($"{path} is not a valid deployment manifest: {problem}.");
+        return manifest;
+    }
+
+    /// <summary>Describes the first structural problem (nulls where values are required), or null.</summary>
+    private string? Validate()
+    {
+        // The serializer happily assigns JSON nulls to non-nullable properties.
+        if (string.IsNullOrEmpty(Name))
+            return "\"name\" is missing";
+        if (Node is null || Pool is null || Address is null)
+            return "\"node\", \"pool\" and \"address\" must be strings";
+        if (Users is null)
+            return "\"users\" must be a list";
+        for (int i = 0; i < Users.Count; i++)
+        {
+            var row = Users[i];
+            if (row is null)
+                return $"users[{i}] is null";
+            if (string.IsNullOrEmpty(row.User) || row.GuestAccount is null || string.IsNullOrEmpty(row.Status))
+                return $"users[{i}] needs \"user\", \"guestAccount\" and \"status\"";
+        }
+        return null;
     }
 
     /// <summary>Writes the manifest atomically (0600).</summary>

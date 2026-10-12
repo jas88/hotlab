@@ -219,4 +219,27 @@ public sealed class RoutingTokenServiceTests
         Assert.DoesNotContain(Key, text, StringComparison.Ordinal);
         Assert.Contains("redacted", text, StringComparison.Ordinal);
     }
+
+    [Theory]
+    [InlineData("\u212Aate")] // KELVIN SIGN: lowercases to ASCII 'k'
+    [InlineData("caf\u00E9")]
+    public void Mint_RejectsNonAsciiUser_EvenIfItLowercasesToAscii(string user)
+    {
+        Assert.Throws<ArgumentException>(() => Create(_time).Mint(user, TimeSpan.FromHours(1)));
+    }
+
+    [Fact]
+    public void Options_Validate_ChecksLifetimeSkewAndKey()
+    {
+        Assert.Null(new RoutingTokenOptions().Validate());
+        Assert.Null(new RoutingTokenOptions { SigningKey = Key, ClockSkew = TimeSpan.Zero }.Validate());
+        Assert.Contains("ClockSkew",
+            new RoutingTokenOptions { ClockSkew = TimeSpan.FromSeconds(-1) }.Validate(), StringComparison.Ordinal);
+        Assert.Contains("DefaultLifetime",
+            new RoutingTokenOptions { DefaultLifetime = TimeSpan.Zero }.Validate(), StringComparison.Ordinal);
+        Assert.Contains("DefaultLifetime",
+            new RoutingTokenOptions { DefaultLifetime = TimeSpan.FromHours(-1) }.Validate(), StringComparison.Ordinal);
+        Assert.Contains("SigningKey",
+            new RoutingTokenOptions { SigningKey = "not base64!" }.Validate(), StringComparison.Ordinal);
+    }
 }

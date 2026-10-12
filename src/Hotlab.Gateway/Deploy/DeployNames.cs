@@ -19,21 +19,29 @@ public static partial class DeployNames
     /// <summary>Longest deployment name (keeps pool ids and VM names short).</summary>
     public const int MaxDeploymentNameLength = 32;
 
+    /// <summary>Human-readable deployment name rule, for error messages.</summary>
+    public const string DeploymentNameRule = "at most 32 characters once lowercased with other characters turned into '-'";
+
     private const int MaxDnsLabelLength = 63;
+
+    /// <summary>Hex digits of the disambiguating hash appended to truncated VM names.</summary>
+    private const int VmNameHashLength = 8;
 
     /// <summary>Accounts that must never be (re)used for a lab user.</summary>
     private static readonly HashSet<string> Reserved = new(StringComparer.Ordinal) { "root" };
 
     /// <summary>
     /// Trims and lowercases <paramref name="raw"/> and checks it against the Linux username
-    /// rule <c>[a-z_][a-z0-9_-]{0,31}</c>. Returns null (with a reason) when invalid.
+    /// rule <c>[a-z_][a-z0-9_-]{0,31}</c>. Returns null (with a reason) when invalid. Non-ASCII
+    /// input is rejected before lowercasing (e.g. the Kelvin sign U+212A lowercases to 'k').
     /// </summary>
     public static string? NormalizeUser(string raw, out string error)
     {
         ArgumentNullException.ThrowIfNull(raw);
-        var user = raw.Trim().ToLowerInvariant();
+        var trimmed = raw.Trim();
+        var user = trimmed.All(char.IsAscii) ? trimmed.ToLowerInvariant() : null;
         error = "";
-        if (!LinuxUserRegex().IsMatch(user))
+        if (user is null || !LinuxUserRegex().IsMatch(user))
         {
             error = $"Invalid user '{raw}': must match [a-z_][a-z0-9_-]{{0,31}} (Linux username rules).";
             return null;
@@ -59,24 +67,38 @@ public static partial class DeployNames
         !Reserved.Contains(account.ToLowerInvariant());
 
     /// <summary>
-    /// Normalizes a deployment name to a lowercase DNS-label fragment of at most
-    /// <see cref="MaxDeploymentNameLength"/> characters. Returns null if nothing usable remains.
+    /// Normalizes a deployment name to a lowercase DNS-label fragment. Returns null if nothing
+    /// usable remains or the result is longer than <see cref="MaxDeploymentNameLength"/>
+    /// characters (rejected rather than truncated, so two long names never alias).
     /// </summary>
     public static string? NormalizeDeploymentName(string raw)
     {
         ArgumentNullException.ThrowIfNull(raw);
-        var label = SanitizeDnsLabel(raw, MaxDeploymentNameLength);
-        return label.Length == 0 ? null : label;
+        var label = SanitizeDnsLabel(raw, int.MaxValue);
+        return label.Length is 0 or > MaxDeploymentNameLength ? null : label;
     }
 
     /// <summary>The resource pool holding a deployment's VMs.</summary>
     public static string PoolId(string deployment) => $"{Tag}-{deployment}";
 
-    /// <summary>The VM name for one user: <c>hotlab-&lt;deployment&gt;-&lt;user&gt;</c>, as a valid DNS label.</summary>
+    /// <summary>
+    /// The VM name for one user: <c>hotlab-&lt;deployment&gt;-&lt;user&gt;</c>, as a valid DNS label.
+    /// A name that would exceed 63 characters is shortened and suffixed with a short hash of
+    /// the full (deployment, user) pair, so distinct users never share a name.
+    /// </summary>
     public static string VmName(string deployment, string user)
     {
-        var name = SanitizeDnsLabel($"{Tag}-{deployment}-{user}", MaxDnsLabelLength);
-        return name.Length == 0 ? Tag : name;
+        ArgumentNullException.ThrowIfNull(deployment);
+        ArgumentNullException.ThrowIfNull(user);
+        var name = SanitizeDnsLabel($"{Tag}-{deployment}-{user}", int.MaxValue);
+        if (name.Length == 0)
+            return Tag;
+        if (name.Length <= MaxDnsLabelLength)
+            return name;
+
+        var hash = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes($"{deployment}\0{user}")));
+        var prefix = name[..(MaxDnsLabelLength - VmNameHashLength - 1)].TrimEnd('-');
+        return $"{prefix}-{hash[..VmNameHashLength]}";
     }
 
     /// <summary>

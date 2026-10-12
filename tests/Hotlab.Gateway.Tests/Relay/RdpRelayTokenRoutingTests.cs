@@ -19,7 +19,7 @@ public sealed class RdpRelayTokenRoutingTests
         var cr = BuildConnectionRequest(user: null, routingToken: token);
 
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(cr, SocketFlags.None);
+        await SendAllAsync(client, cr);
 
         using var backend = await h.AcceptBackendAsync();
         Assert.Equal(cr, await ReadExactlyAsync(backend, cr.Length)); // token forwarded verbatim
@@ -36,7 +36,7 @@ public sealed class RdpRelayTokenRoutingTests
         var cr = BuildConnectionRequest(user: "johnsmith", routingToken: token);
 
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(cr, SocketFlags.None);
+        await SendAllAsync(client, cr);
 
         using var backend = await h.AcceptBackendAsync();
         Assert.Equal(cr, await ReadExactlyAsync(backend, cr.Length));
@@ -63,7 +63,7 @@ public sealed class RdpRelayTokenRoutingTests
         };
 
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(BuildConnectionRequest(user: "alice", routingToken: token), SocketFlags.None);
+        await SendAllAsync(client, BuildConnectionRequest(user: "alice", routingToken: token));
 
         await AssertClosedAsync(client);
         Assert.Equal(0, h.Activator.Calls);
@@ -76,8 +76,7 @@ public sealed class RdpRelayTokenRoutingTests
     {
         await using var h = await StartAsync();
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(
-            BuildConnectionRequest(user: "alice", routingToken: h.Tokens.Mint("mallory")), SocketFlags.None);
+        await SendAllAsync(client, BuildConnectionRequest(user: "alice", routingToken: h.Tokens.Mint("mallory")));
 
         await AssertClosedAsync(client);
         Assert.Equal(0, h.Activator.Calls);
@@ -91,7 +90,7 @@ public sealed class RdpRelayTokenRoutingTests
         var cr = BuildConnectionRequest(user: "alice", routingToken: tsv);
 
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(cr, SocketFlags.None);
+        await SendAllAsync(client, cr);
 
         using var backend = await h.AcceptBackendAsync();
         Assert.Equal(cr, await ReadExactlyAsync(backend, cr.Length));
@@ -104,9 +103,7 @@ public sealed class RdpRelayTokenRoutingTests
     {
         await using var h = await StartAsync();
         using var client = await h.ConnectClientAsync();
-        await client.SendAsync(
-            BuildConnectionRequest(user: null, routingToken: "tsv://MS Terminal Services Plugin.1.Coll"),
-            SocketFlags.None);
+        await SendAllAsync(client, BuildConnectionRequest(user: null, routingToken: "tsv://MS Terminal Services Plugin.1.Coll"));
 
         await AssertClosedAsync(client);
         Assert.Equal(0, h.Activator.Calls);

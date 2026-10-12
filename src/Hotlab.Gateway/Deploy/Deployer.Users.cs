@@ -12,13 +12,19 @@ public sealed partial class Deployer
     {
         var manifest = state.Manifest;
         var row = state.GetOrAdd(user);
+        var name = DeployNames.VmName(manifest.Name, user);
+        // Set once this attempt may have created a VM; only then does failure cleanup run.
+        int? createdVmId = null;
         try
         {
             if (row.VmId is int previous)
                 await RemoveLeftoverAsync(manifest, row, previous, ct).ConfigureAwait(false);
 
+            // /cluster/nextid is not a reservation: another client can take the id before our
+            // clone request, which Proxmox then rejects.
             int vmId = await _backend.GetNextVmIdAsync(ct).ConfigureAwait(false);
-            var name = DeployNames.VmName(manifest.Name, user);
+            // Recorded as "cloning" before the request, so an interrupted clone (not yet tagged)
+            // is recognised on a re-run by pool and name (see RemoveLeftoverAsync).
             state.Update(row, r =>
             {
                 r.VmId = vmId;
@@ -29,9 +35,32 @@ public sealed partial class Deployer
             });
             _log.Info($"{user}: cloning {manifest.SourceVmId} -> VM {vmId} ({name})...");
 
-            var exit = await _backend.CloneAsync(
-                manifest.Node, manifest.SourceVmId, vmId, name, fullClone: !isTemplate, manifest.Pool, ct)
-                .ConfigureAwait(false);
+            string task;
+            try
+            {
+                task = await _backend.StartCloneAsync(
+                    manifest.Node, manifest.SourceVmId, vmId, name, fullClone: !isTemplate, manifest.Pool, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (ProxmoxApiException)
+            {
+                // Rejected outright (e.g. the VMID was taken meanwhile): nothing of ours exists
+                // under that id, so stop pointing the row at it.
+                state.Update(row, r =>
+                {
+                    r.VmId = null;
+                    r.VmName = null;
+                });
+                throw;
+            }
+            catch (Exception ex) when (IsUserFailure(ex, ct))
+            {
+                createdVmId = vmId; // Transport error: the request may have been accepted.
+                throw;
+            }
+            createdVmId = vmId;
+
+            var exit = await _backend.WaitForTaskAsync(manifest.Node, task, ct).ConfigureAwait(false);
             if (exit != "OK")
                 throw new DeployException($"clone failed: {exit}");
 
@@ -45,7 +74,7 @@ public sealed partial class Deployer
         }
         catch (Exception ex) when (IsUserFailure(ex, ct))
         {
-            await FailAsync(state, row, Describe(ex), ct).ConfigureAwait(false);
+            await FailAsync(state, row, Describe(ex), createdVmId, name, ct).ConfigureAwait(false);
             return null;
         }
     }
@@ -55,6 +84,7 @@ public sealed partial class Deployer
     {
         var manifest = state.Manifest;
         int vmId = row.VmId!.Value;
+        var name = row.VmName!;
         try
         {
             var password = DeployNames.GeneratePassword();
@@ -71,32 +101,36 @@ public sealed partial class Deployer
         }
         catch (Exception ex) when (IsUserFailure(ex, ct))
         {
-            await FailAsync(state, row, Describe(ex), ct).ConfigureAwait(false);
+            await FailAsync(state, row, Describe(ex), vmId, name, ct).ConfigureAwait(false);
         }
     }
 
-    /// <summary>Records the failure and destroys the partial clone if it is in our pool.</summary>
-    private async Task FailAsync(DeploymentState state, DeployedUser row, string error, CancellationToken ct)
+    /// <summary>
+    /// Records the failure and, when this attempt created (or may have created) VM
+    /// <paramref name="createdVmId"/>, destroys it if it is in our pool with the expected name.
+    /// </summary>
+    private async Task FailAsync(
+        DeploymentState state, DeployedUser row, string error, int? createdVmId, string expectedName, CancellationToken ct)
     {
         _log.Error($"{row.User}: FAILED: {error}");
         state.MarkFailed(row, error);
-        if (row.VmId is not int vmId)
+        if (createdVmId is not int vmId)
             return;
 
         try
         {
-            // Pool membership is enough here: the clone went straight into our pool, possibly
-            // before it was tagged. A VMID taken by someone else is never in our pool.
-            var check = await VmCleanup.CheckAsync(_backend, state.Manifest.Pool, vmId, requireTag: false, ct)
-                .ConfigureAwait(false);
+            // No tag needed: the clone went straight into our pool, possibly before it was
+            // tagged. The name guards against a VMID someone else took after ours was freed.
+            var rule = new VmOwnershipRule(state.Manifest.Pool, RequireTag: false, expectedName);
+            var check = await VmCleanup.CheckAsync(_backend, rule, vmId, ct).ConfigureAwait(false);
             if (!check.Exists)
                 return;
             if (!check.Owned)
             {
-                _log.Error($"{row.User}: VM {vmId} is not in pool {state.Manifest.Pool}; not destroying it.");
+                _log.Error($"{row.User}: VM {vmId} is not {rule.Describe()}; not destroying it.");
                 return;
             }
-            await VmCleanup.DestroyAsync(_backend, check.Node!, vmId, ct).ConfigureAwait(false);
+            await VmCleanup.DestroyAsync(_backend, rule, check.Node!, vmId, ct).ConfigureAwait(false);
             _log.Info($"{row.User}: destroyed partial clone VM {vmId}.");
         }
         catch (Exception ex) when (IsUserFailure(ex, ct))
@@ -106,27 +140,30 @@ public sealed partial class Deployer
     }
 
     /// <summary>
-    /// Before redeploying a user whose earlier VM is gone or failed: destroy a leftover VM if it
-    /// is still ours (pool and tag); otherwise leave it alone.
+    /// Before redeploying a user whose earlier VM is gone, failed or no longer ours: destroy a
+    /// leftover VM if it is still ours, otherwise leave it alone. A clone interrupted while
+    /// cloning may not be tagged yet, so for a row still in the cloning state pool membership
+    /// and the recorded name suffice; otherwise the tag is required too.
     /// </summary>
     private async Task RemoveLeftoverAsync(DeploymentManifest manifest, DeployedUser row, int vmId, CancellationToken ct)
     {
-        var check = await VmCleanup.CheckAsync(_backend, manifest.Pool, vmId, requireTag: true, ct).ConfigureAwait(false);
+        bool interruptedClone = row.Status == DeployStatus.Cloning && row.VmName is not null;
+        var rule = new VmOwnershipRule(manifest.Pool, RequireTag: !interruptedClone, row.VmName);
+        var check = await VmCleanup.CheckAsync(_backend, rule, vmId, ct).ConfigureAwait(false);
         if (!check.Exists)
             return;
         if (!check.Owned)
         {
-            _log.Error($"{row.User}: earlier VM {vmId} still exists but is not in pool {manifest.Pool} " +
-                $"with tag {DeployNames.Tag}; leaving it alone.");
+            _log.Error($"{row.User}: earlier VM {vmId} still exists but is not {rule.Describe()}; leaving it alone.");
             return;
         }
         _log.Info($"{row.User}: destroying leftover VM {vmId} from an earlier run...");
-        await VmCleanup.DestroyAsync(_backend, check.Node!, vmId, ct).ConfigureAwait(false);
+        await VmCleanup.DestroyAsync(_backend, rule, check.Node!, vmId, ct).ConfigureAwait(false);
     }
 
+    /// <summary>Any failure is the user's alone, except cancellation of the whole run.</summary>
     private static bool IsUserFailure(Exception ex, CancellationToken ct) =>
-        ex is DeployException or ProxmoxApiException or HttpRequestException ||
-        (ex is OperationCanceledException && !ct.IsCancellationRequested);
+        ex is not OperationCanceledException || !ct.IsCancellationRequested;
 
     private static string Describe(Exception ex) =>
         ex is ProxmoxApiException api ? $"Proxmox API error {(int)api.StatusCode}: {api.ResponseBody.Trim()}" : ex.Message;

@@ -82,6 +82,8 @@ public sealed partial class ProxmoxClient
     /// <c>GET /cluster/resources?type=vm</c>), or null if no such VM is visible to this token.
     /// Node-independent, so it also finds VMs that have migrated.
     /// </summary>
+    /// <exception cref="InvalidDataException">The VM is listed without a node, so it cannot be
+    /// addressed; treating it as absent could let callers act as though it were gone.</exception>
     public async Task<string?> FindVmNodeAsync(int vmId, CancellationToken ct = default)
     {
         using var data = await GetAsync("/cluster/resources?type=vm", ct).ConfigureAwait(false);
@@ -91,7 +93,10 @@ public sealed partial class ProxmoxClient
                 resource.TryGetProperty("vmid", out var id) && id.ValueKind == JsonValueKind.Number &&
                 id.GetInt32() == vmId)
             {
-                return resource.TryGetProperty("node", out var node) ? node.GetString() : "";
+                return resource.TryGetProperty("node", out var node) && node.ValueKind == JsonValueKind.String &&
+                    node.GetString() is { Length: > 0 } name
+                    ? name
+                    : throw new InvalidDataException($"Proxmox listed VM {vmId} without a node.");
             }
         }
 

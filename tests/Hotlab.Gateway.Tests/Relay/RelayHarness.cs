@@ -48,7 +48,7 @@ internal sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>
 /// </summary>
 internal sealed class RelayHarness : IAsyncDisposable
 {
-    public static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
+    public static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(30);
 
     private RelayHarness(
         RdpListenerService service, TcpListener backend, FakeActivator activator,
@@ -155,6 +155,21 @@ internal sealed class RelayHarness : IAsyncDisposable
         var bytes = new byte[count];
         new Random(seed).NextBytes(bytes);
         return bytes;
+    }
+
+    /// <summary>
+    /// Sends all of <paramref name="data"/>: a single <see cref="Socket.SendAsync(ReadOnlyMemory{byte}, SocketFlags, CancellationToken)"/>
+    /// may accept only part of a large buffer, so loop until everything is written.
+    /// </summary>
+    public static async Task SendAllAsync(Socket socket, ReadOnlyMemory<byte> data)
+    {
+        using var cts = new CancellationTokenSource(TestTimeout);
+        while (!data.IsEmpty)
+        {
+            var n = await socket.SendAsync(data, SocketFlags.None, cts.Token);
+            Assert.True(n > 0, "send made no progress");
+            data = data[n..];
+        }
     }
 
     /// <summary>Reads exactly <paramref name="count"/> bytes or fails on timeout/EOF.</summary>

@@ -13,13 +13,21 @@ public sealed class DeployCommandTests : IDisposable
 
     public void Dispose() => _temp.Dispose();
 
-    private static IConfiguration Config(string? key = null) =>
-        new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+    private static IConfiguration Config(string? key = null, params (string Key, string Value)[] extra)
+    {
+        var values = new Dictionary<string, string?>
         {
             ["Hotlab:Tokens:SigningKey"] = key ?? Key,
-            ["Hotlab:Deploy:PollInterval"] = "00:00:00",
+            ["Hotlab:Deploy:PollInterval"] = "00:00:00.001",
             ["Hotlab:Deploy:AgentTimeout"] = "00:00:05",
-        }).Build();
+        };
+        foreach (var (k, v) in extra)
+            values[k] = v;
+        return new ConfigurationBuilder().AddInMemoryCollection(values).Build();
+    }
+
+    private string[] ArgsFor(params string[] users) =>
+        ["--source", "9000", "--node", "pve1", "--address", "gw", "--out", _temp.Combine("o"), .. users];
 
     private async Task<RunResult> RunAsync(string verb, IConfiguration config, params string[] args)
     {
@@ -47,13 +55,50 @@ public sealed class DeployCommandTests : IDisposable
         Assert.Single(_backend.Vms); // only the source is left
     }
 
+    [Theory]
+    [InlineData(DeployCommand.Name, "Usage: Hotlab.Gateway deploy")]
+    [InlineData(TeardownCommand.Name, "Usage: Hotlab.Gateway teardown")]
+    public async Task Help_prints_usage_and_succeeds(string verb, string usage)
+    {
+        var result = await RunAsync(verb, Config(), "--help");
+
+        Assert.Equal(0, result.Code);
+        Assert.Contains(usage, result.Out, StringComparison.Ordinal);
+        Assert.Empty(_backend.Calls);
+    }
+
     [Fact]
     public async Task Deploy_usage_error_returns_two_with_usage()
     {
-        var result = await RunAsync(DeployCommand.Name, Config(), "--help");
+        var result = await RunAsync(DeployCommand.Name, Config(), "--source", "x");
 
         Assert.Equal(2, result.Code);
         Assert.Contains("Usage: Hotlab.Gateway deploy", result.Err, StringComparison.Ordinal);
+        Assert.Empty(_backend.Calls);
+    }
+
+    [Fact]
+    public async Task Deploy_empty_users_file_path_is_usage_error()
+    {
+        var result = await RunAsync(DeployCommand.Name, Config(), [.. ArgsFor(), "--users-file", ""]);
+
+        Assert.Equal(2, result.Code);
+        Assert.Contains("--users-file", result.Err, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("Hotlab:Deploy:PollInterval", "00:00:00")]
+    [InlineData("Hotlab:Deploy:AgentTimeout", "-00:00:01")]
+    [InlineData("Hotlab:Deploy:CommandTimeout", "00:00:00")]
+    [InlineData("Hotlab:Deploy:ShutdownTimeout", "-00:01:00")]
+    [InlineData("Hotlab:Tokens:DefaultLifetime", "00:00:00")]
+    [InlineData("Hotlab:Tokens:ClockSkew", "-00:00:01")]
+    public async Task Deploy_rejects_invalid_settings_before_cloning(string setting, string value)
+    {
+        var result = await RunAsync(DeployCommand.Name, Config(null, (setting, value)), ArgsFor("alice"));
+
+        Assert.Equal(1, result.Code);
+        Assert.Contains(setting.Split(':')[^1], result.Err, StringComparison.Ordinal);
         Assert.Empty(_backend.Calls);
     }
 
@@ -82,7 +127,6 @@ public sealed class DeployCommandTests : IDisposable
     [InlineData]
     [InlineData("--out")]
     [InlineData("--out", "a", "--bogus")]
-    [InlineData("--help")]
     public async Task Teardown_usage_errors_return_two(params string[] args)
     {
         var result = await RunAsync(TeardownCommand.Name, Config(), args);

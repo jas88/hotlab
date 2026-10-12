@@ -85,6 +85,42 @@ public class ProxmoxClientTests
     }
 
     [Fact]
+    public async Task GetVmStatus_gets_status_current_and_returns_status()
+    {
+        var (client, handler) = Create();
+        using var _ = client;
+        handler.EnqueueData("""{"status":"running","vmid":123,"qmpstatus":"running","uptime":42}""");
+
+        var status = await client.GetVmStatusAsync("pve1", 123);
+
+        Assert.Equal("running", status);
+        Assert.Equal(HttpMethod.Get, handler.Requests[0].Method);
+        Assert.Equal("/api2/json/nodes/pve1/qemu/123/status/current", handler.Requests[0].Path);
+    }
+
+    [Fact]
+    public async Task GetVmStatus_returns_stopped()
+    {
+        var (client, handler) = Create();
+        using var _ = client;
+        handler.EnqueueData("""{"status":"stopped","vmid":124}""");
+
+        Assert.Equal("stopped", await client.GetVmStatusAsync("pve1", 124));
+    }
+
+    [Fact]
+    public async Task GetVmStatus_unknown_vm_throws_ProxmoxApiException()
+    {
+        var (client, handler) = Create();
+        using var _ = client;
+        handler.Enqueue(HttpStatusCode.InternalServerError, """{"data":null,"message":"Configuration file 'nodes/pve1/qemu-server/999.conf' does not exist\n"}""");
+
+        var ex = await Assert.ThrowsAsync<ProxmoxApiException>(() => client.GetVmStatusAsync("pve1", 999));
+
+        Assert.Equal(HttpStatusCode.InternalServerError, ex.StatusCode);
+    }
+
+    [Fact]
     public async Task StopVm_posts_to_status_stop()
     {
         var (client, handler) = Create();

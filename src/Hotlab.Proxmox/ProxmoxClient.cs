@@ -95,6 +95,16 @@ public sealed class ProxmoxClient : IDisposable
         return data.RootElement.GetString()!;
     }
 
+    /// <summary>
+    /// Returns the VM's current power status as reported by Proxmox
+    /// (e.g. "running", "stopped", "paused").
+    /// </summary>
+    public async Task<string> GetVmStatusAsync(string node, int vmId, CancellationToken ct = default)
+    {
+        using var data = await GetAsync($"/nodes/{node}/qemu/{vmId}/status/current", ct).ConfigureAwait(false);
+        return data.RootElement.GetProperty("status").GetString() ?? "";
+    }
+
     /// <summary>Stops a VM (hard power-off). Returns the task UPID.</summary>
     public async Task<string> StopVmAsync(string node, int vmId, CancellationToken ct = default)
     {

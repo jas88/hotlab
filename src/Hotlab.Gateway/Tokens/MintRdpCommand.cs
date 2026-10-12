@@ -61,15 +61,9 @@ public static class MintRdpCommand
             return 2;
         }
 
-        stdout.Write(BuildRdpFile(address, user.Trim().ToLowerInvariant(), token));
+        stdout.Write(RdpFileRenderer.Render(address, user.Trim().ToLowerInvariant(), token));
         return 0;
     }
-
-    /// <summary>Renders the .rdp file body (CRLF line endings, as mstsc writes them).</summary>
-    public static string BuildRdpFile(string address, string user, string token) =>
-        $"full address:s:{address}\r\n" +
-        $"username:s:{user}\r\n" +
-        $"loadbalanceinfo:s:{token}\r\n";
 
     private static bool TryParseArgs(
         IReadOnlyList<string> args, out string user, out string address, out TimeSpan? lifetime,

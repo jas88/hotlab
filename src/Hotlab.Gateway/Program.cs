@@ -1,5 +1,6 @@
 using Hotlab.Gateway.Activation;
 using Hotlab.Gateway.Configuration;
+using Hotlab.Gateway.Deploy;
 using Hotlab.Gateway.Relay;
 using Hotlab.Gateway.Routing;
 using Hotlab.Gateway.Tokens;
@@ -24,8 +25,24 @@ if (args.Length > 0 && args[0] == MintRdpCommand.Name)
     return MintRdpCommand.Run(args[1..], mintConfig, Console.Out, Console.Error);
 }
 
+if (args.Length > 0 && args[0] is DeployCommand.Name or TeardownCommand.Name)
+{
+    var verbConfig = CreateBuilder([]).Configuration;
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) =>
+    {
+        e.Cancel = true; // Let the command record its progress before exiting.
+        cts.Cancel();
+    };
+    return args[0] == DeployCommand.Name
+        ? await DeployCommand.RunAsync(args[1..], verbConfig, Console.Out, Console.Error, ct: cts.Token).ConfigureAwait(false)
+        : await TeardownCommand.RunAsync(args[1..], verbConfig, Console.Out, Console.Error, ct: cts.Token).ConfigureAwait(false);
+}
+
 var builder = CreateBuilder(args);
 var config = builder.Configuration;
+// Deployment-maintained user map (deploy --users-file-target), reloaded on change.
+var usersFile = UsersFileConfiguration.Add(config, config);
 
 builder.Services.Configure<GatewayOptions>(config.GetSection(GatewayOptions.SectionName));
 builder.Services.Configure<UserMapOptions>(config.GetSection(UserMapOptions.SectionName));
@@ -54,6 +71,11 @@ builder.Services.AddSingleton<RdpConnectionHandler>();
 builder.Services.AddHostedService<RdpListenerService>();
 
 using var host = builder.Build();
+if (usersFile is not null)
+{
+    host.Services.GetRequiredService<ILogger<UserMapOptions>>()
+        .LogInformation("Loading user map from {UsersFile} (reload on change)", usersFile);
+}
 await host.RunAsync().ConfigureAwait(false);
 return 0;
 

@@ -283,3 +283,10 @@ To use a different settings directory, set `HOTLAB_CONFIG_DIR`. The running gate
 - **Purge** (`apt purge hotlab-gateway`) also deletes `/etc/hotlab`, including `users.json`.
   It leaves `/etc/credstore.encrypted` and the `hotlab` account in place; remove those by hand
   if you no longer need them.
+
+## License
+
+Hotlab is licensed under the GNU Affero General Public License v3.0 or later
+(AGPL-3.0-or-later); see [LICENSE](LICENSE). If you run a modified version as a
+network service, section 13 requires offering its source to the users who interact
+with it.

@@ -88,6 +88,26 @@ public class X224ConnectionRequestTests
         Assert.Null(req.RequestedProtocols);
     }
 
+    [Theory]
+    [InlineData("hotlab:x\r\nCookie: mstshash=bob\r\n")]
+    [InlineData("Cookie: mstshash=bob\r\nhotlab:x\r\n")]
+    public void TokenAndCookie_InEitherOrder_AreBothReturned(string lines)
+    {
+        Assert.True(X224ConnectionRequest.TryParse(Build(lines, NegReq(0x3)), out var req));
+        Assert.Equal("bob", req!.Cookie);
+        Assert.Equal("hotlab:x", req.RoutingToken);
+        Assert.Equal(0x3u, req.RequestedProtocols);
+    }
+
+    [Theory]
+    [InlineData("Cookie: mstshash=a\r\nCookie: mstshash=b\r\n")]
+    [InlineData("hotlab:x\r\ntsv://y\r\n")]
+    [InlineData("hotlab:x\r\nCookie: mstshash=b\r\ntsv://y\r\n")]
+    public void RepeatedOrExtraIdentityLines_AreRejected(string lines)
+    {
+        Assert.False(X224ConnectionRequest.TryParse(Build(lines, NegReq(0x3)), out _));
+    }
+
     [Fact]
     public void LoadBalanceInfoToken_MissingCrlf_IsRejected()
     {

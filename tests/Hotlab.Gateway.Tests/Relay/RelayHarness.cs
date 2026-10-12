@@ -4,6 +4,8 @@ using System.Text;
 using Hotlab.Gateway.Activation;
 using Hotlab.Gateway.Relay;
 using Hotlab.Gateway.Routing;
+using Hotlab.Gateway.Tests.Tokens;
+using Hotlab.Gateway.Tokens;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -48,11 +50,15 @@ internal sealed class RelayHarness : IAsyncDisposable
 {
     public static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
 
-    private RelayHarness(RdpListenerService service, TcpListener backend, FakeActivator activator)
+    private RelayHarness(
+        RdpListenerService service, TcpListener backend, FakeActivator activator,
+        RoutingTokenService tokens, CapturingLogger<RdpConnectionHandler> handlerLog)
     {
         Service = service;
         Backend = backend;
         Activator = activator;
+        Tokens = tokens;
+        HandlerLog = handlerLog;
     }
 
     public RdpListenerService Service { get; }
@@ -60,6 +66,12 @@ internal sealed class RelayHarness : IAsyncDisposable
     public TcpListener Backend { get; }
 
     public FakeActivator Activator { get; }
+
+    /// <summary>Token service the gateway validates with (keyed with <see cref="TokenTestSupport.Key"/>).</summary>
+    public RoutingTokenService Tokens { get; }
+
+    /// <summary>Everything the connection handler logged.</summary>
+    public CapturingLogger<RdpConnectionHandler> HandlerLog { get; }
 
     public IPEndPoint BackendEndPoint => (IPEndPoint)Backend.LocalEndpoint;
 
@@ -87,11 +99,12 @@ internal sealed class RelayHarness : IAsyncDisposable
             FirstPduTimeout = TimeSpan.FromSeconds(2),
             MaxConnections = maxConnections,
         });
-        var handler = new RdpConnectionHandler(
-            resolver, activator, options, NullLogger<RdpConnectionHandler>.Instance);
+        var tokens = TokenTestSupport.Create();
+        var handlerLog = new CapturingLogger<RdpConnectionHandler>();
+        var handler = new RdpConnectionHandler(resolver, activator, tokens, options, handlerLog);
         var service = new RdpListenerService(handler, options, NullLogger<RdpListenerService>.Instance);
         await service.StartAsync(CancellationToken.None);
-        return new RelayHarness(service, backend, activator);
+        return new RelayHarness(service, backend, activator, tokens, handlerLog);
     }
 
     public async Task<Socket> ConnectClientAsync()
@@ -117,12 +130,14 @@ internal sealed class RelayHarness : IAsyncDisposable
     }
 
     /// <summary>
-    /// Builds a TPKT + X.224 Connection Request by hand, with an optional mstshash cookie
-    /// and an RDP_NEG_REQ asking for TLS|CredSSP.
+    /// Builds a TPKT + X.224 Connection Request by hand, with an optional routing token line,
+    /// an optional mstshash cookie, and an RDP_NEG_REQ asking for TLS|CredSSP.
     /// </summary>
-    public static byte[] BuildConnectionRequest(string? user)
+    public static byte[] BuildConnectionRequest(string? user, string? routingToken = null)
     {
-        var cookie = user is null ? [] : Encoding.ASCII.GetBytes($"Cookie: mstshash={user}\r\n");
+        var cookieLine = (routingToken is null ? "" : routingToken + "\r\n")
+                         + (user is null ? "" : $"Cookie: mstshash={user}\r\n");
+        var cookie = Encoding.ASCII.GetBytes(cookieLine);
         byte[] negReq = [0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00];
         var li = 6 + cookie.Length + negReq.Length;
         var total = 4 + 1 + li;

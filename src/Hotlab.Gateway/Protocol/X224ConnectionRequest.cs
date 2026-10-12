@@ -20,6 +20,7 @@ public sealed record X224ConnectionRequest(
     private const int NegotiationRequestLength = 8;
     private const byte CorrelationInfoPresent = 0x08;
     private const int CorrelationInfoLength = 36;
+    private const int MaxIdentityLines = 2;
 
     private static ReadOnlySpan<byte> MstsHashPrefix => "Cookie: mstshash="u8;
     private static ReadOnlySpan<byte> Crlf => "\r\n"u8;
@@ -63,8 +64,14 @@ public sealed record X224ConnectionRequest(
         // printable line that is not an mstshash cookie is reported raw as RoutingToken.
         // RDP_NEG_REQ starts with type 0x01 (non-printable), so a printable first byte
         // unambiguously means a line is present.
-        if (!variable.IsEmpty && variable[0] is >= 0x20 and <= 0x7E)
+        // Although the spec makes them mutually exclusive, one line of each kind (in either
+        // order) is tolerated so that a non-conforming client cannot use the combination to
+        // dodge routing: the gateway defines the precedence (a Hotlab token wins). A repeated
+        // kind or a third line is rejected.
+        for (int lines = 0; !variable.IsEmpty && variable[0] is >= 0x20 and <= 0x7E; lines++)
         {
+            if (lines == MaxIdentityLines)
+                return false;
             int crlf = variable.IndexOf(Crlf);
             if (crlf < 0)
                 return false;
@@ -73,9 +80,17 @@ public sealed record X224ConnectionRequest(
                 return false;
 
             if (line.StartsWith(MstsHashPrefix))
+            {
+                if (cookie is not null)
+                    return false;
                 cookie = Encoding.ASCII.GetString(line[MstsHashPrefix.Length..]);
+            }
             else
+            {
+                if (routingToken is not null)
+                    return false;
                 routingToken = Encoding.ASCII.GetString(line);
+            }
 
             variable = variable[(crlf + Crlf.Length)..];
         }

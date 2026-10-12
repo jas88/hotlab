@@ -1,17 +1,20 @@
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Sockets;
 using Hotlab.Gateway.Activation;
 using Hotlab.Gateway.Protocol;
 using Hotlab.Gateway.Routing;
+using Hotlab.Gateway.Tokens;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace Hotlab.Gateway.Relay;
 
 /// <summary>
-/// Handles one inbound RDP connection: reads the X.224 Connection Request, routes on the
-/// <c>mstshash</c> cookie, activates the user's VM, then forwards the buffered first PDU
+/// Handles one inbound RDP connection: reads the X.224 Connection Request, routes on a
+/// signed Hotlab routing token (.rdp <c>loadbalanceinfo</c>) or else the <c>mstshash</c>
+/// cookie, activates the user's VM, then forwards the buffered first PDU
 /// verbatim and splices both directions. No TLS termination: security negotiation
 /// happens end to end between client and guest.
 /// </summary>
@@ -19,6 +22,7 @@ public sealed class RdpConnectionHandler
 {
     private readonly IUserTargetResolver _resolver;
     private readonly IVmActivator _activator;
+    private readonly RoutingTokenService _tokens;
     private readonly GatewayOptions _options;
     private readonly ILogger<RdpConnectionHandler> _logger;
 
@@ -26,11 +30,13 @@ public sealed class RdpConnectionHandler
     public RdpConnectionHandler(
         IUserTargetResolver resolver,
         IVmActivator activator,
+        RoutingTokenService tokens,
         IOptions<GatewayOptions> options,
         ILogger<RdpConnectionHandler> logger)
     {
         _resolver = resolver;
         _activator = activator;
+        _tokens = tokens;
         _options = options.Value;
         _logger = logger;
     }
@@ -76,35 +82,8 @@ public sealed class RdpConnectionHandler
             return;
         }
 
-        if (request.RoutingToken is not null)
-        {
-            // Not routed on yet; will carry .rdp loadbalanceinfo values in future.
-            _logger.LogInformation("Connection from {Remote} carries routing token {RoutingToken}",
-                remote, request.RoutingToken);
-        }
-
-        var resolution = _resolver.ResolveCookie(request.Cookie);
-        var user = resolution.User;
-        var target = resolution.Target;
-        switch (resolution.Match)
-        {
-            case CookieMatch.NoUser:
-                Reject(remote, "no usable mstshash cookie");
-                return;
-            case CookieMatch.AmbiguousPrefix:
-                Reject(remote, $"truncated cookie '{request.Cookie}' matches several users");
-                return;
-            case CookieMatch.UniquePrefix:
-                _logger.LogInformation("Truncated cookie {Cookie} from {Remote} resolved to user {User}",
-                    request.Cookie, remote, user);
-                break;
-        }
-
-        if (target is null)
-        {
-            Reject(remote, $"unknown user '{user}'");
+        if (!TryRoute(request, remote, out var user, out var target))
             return;
-        }
 
         var activation = Stopwatch.StartNew();
         IPEndPoint backendEp;
@@ -151,6 +130,84 @@ public sealed class RdpConnectionHandler
             result.ClientToBackendBytes + pdu.Length, result.BackendToClientBytes,
             activation.ElapsedMilliseconds, total.ElapsedMilliseconds,
             result.Error is null ? "" : $" ({result.Error.GetType().Name}: {result.Error.Message})");
+    }
+
+    /// <summary>
+    /// Picks the target. A valid Hotlab routing token wins and the cookie is ignored; an
+    /// invalid Hotlab token is rejected outright (no cookie fallback); any other token, or
+    /// none, falls through to the mstshash cookie.
+    /// </summary>
+    private bool TryRoute(
+        X224ConnectionRequest request, EndPoint? remote,
+        [NotNullWhen(true)] out string? user, [NotNullWhen(true)] out VmTarget? target)
+    {
+        user = null;
+        target = null;
+
+        if (request.RoutingToken is not null)
+        {
+            var token = _tokens.Validate(request.RoutingToken);
+            switch (token.Status)
+            {
+                case TokenStatus.Valid:
+                    _logger.LogInformation(
+                        "Connection from {Remote} carries a valid Hotlab token for user {User} (expires {Expiry:o}){CookieNote}",
+                        remote, token.User, token.Expiry,
+                        request.Cookie is null ? "" : "; ignoring mstshash cookie");
+                    user = token.User!;
+                    target = _resolver.Resolve(user);
+                    if (target is null)
+                    {
+                        Reject(remote, $"unknown user '{user}' (from Hotlab token)");
+                        return false;
+                    }
+                    return true;
+
+                case TokenStatus.Invalid:
+                    _logger.LogWarning(
+                        "Rejecting {Remote}: invalid Hotlab token ({Reason}); claimed user {User}, expiry {Expiry:o}",
+                        remote, token.Reason, token.User ?? "?", token.Expiry);
+                    return false;
+
+                default:
+                    _logger.LogInformation(
+                        "Connection from {Remote} carries non-Hotlab routing token {RoutingToken}; routing on cookie",
+                        remote, RoutingTokenService.RedactForLog(request.RoutingToken));
+                    break;
+            }
+        }
+
+        return TryRouteCookie(request.Cookie, remote, out user, out target);
+    }
+
+    private bool TryRouteCookie(
+        string? cookie, EndPoint? remote,
+        [NotNullWhen(true)] out string? user, [NotNullWhen(true)] out VmTarget? target)
+    {
+        var resolution = _resolver.ResolveCookie(cookie);
+        user = resolution.User;
+        target = resolution.Target;
+        switch (resolution.Match)
+        {
+            case CookieMatch.NoUser:
+                Reject(remote, "no usable mstshash cookie");
+                return false;
+            case CookieMatch.AmbiguousPrefix:
+                Reject(remote, $"truncated cookie '{cookie}' matches several users");
+                return false;
+            case CookieMatch.UniquePrefix:
+                _logger.LogInformation("Truncated cookie {Cookie} from {Remote} resolved to user {User}",
+                    cookie, remote, user);
+                break;
+        }
+
+        if (target is null || user is null)
+        {
+            Reject(remote, $"unknown user '{user}'");
+            return false;
+        }
+
+        return true;
     }
 
     private async Task<byte[]?> ReadFirstPduAsync(Socket client, EndPoint? remote, CancellationToken ct)

@@ -20,9 +20,27 @@ public static class DeploymentOutputs
     /// <summary>The .rdp file name for a user.</summary>
     public static string RdpFileName(string user) => $"{user}.rdp";
 
+    /// <summary>
+    /// The full path of a user's .rdp file in <paramref name="dir"/>. Users are validated when
+    /// the manifest is loaded; this re-checks that the file stays directly inside the directory.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The user name would escape <paramref name="dir"/>.</exception>
+    public static string RdpPath(string dir, string user)
+    {
+        ArgumentNullException.ThrowIfNull(user);
+        var full = Path.GetFullPath(dir);
+        var path = Path.GetFullPath(Path.Combine(full, RdpFileName(user)));
+        if (!SamePath(Path.GetDirectoryName(path)!, full) || Path.GetFileName(path) != RdpFileName(user))
+            throw new InvalidDataException($"User '{user}' does not name a file inside {full}.");
+        return path;
+    }
+
     /// <summary>Writes a user's .rdp file.</summary>
     public static void WriteRdp(string dir, string user, string content) =>
-        AtomicFile.WriteAllText(Path.Combine(dir, RdpFileName(user)), content, AtomicFile.PrivateFile);
+        AtomicFile.WriteAllText(RdpPath(dir, user), content, AtomicFile.PrivateFile);
+
+    /// <summary>Deletes a user's .rdp file, if any.</summary>
+    public static void DeleteRdp(string dir, string user) => File.Delete(RdpPath(dir, user));
 
     /// <summary>Reads <c>passwords.csv</c>, keyed by user (case-insensitive); empty if missing.</summary>
     public static Dictionary<string, PasswordRow> ReadPasswords(string dir)
@@ -82,14 +100,22 @@ public static class DeploymentOutputs
         AtomicFile.WriteAllText(Path.Combine(dir, UsersJsonFile), RenderUsersJson(mappings), AtomicFile.PrivateFile);
 
     /// <summary>
-    /// True when two full paths name the same file (case-insensitively on Windows and macOS,
-    /// whose default file systems are).
+    /// True when two paths are the same once made full: compared ordinally on every platform.
+    /// On a case-insensitive file system two spellings differing only in case are then treated
+    /// as different files, which is the safe direction for "has this setting changed?" checks
+    /// (a case-only change is refused rather than silently accepted on a case-sensitive volume).
     /// </summary>
     public static bool SamePath(string a, string b) =>
-        string.Equals(
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(a)),
-            Path.TrimEndingDirectorySeparator(Path.GetFullPath(b)),
-            OperatingSystem.IsWindows() || OperatingSystem.IsMacOS() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+        string.Equals(Normalize(a), Normalize(b), StringComparison.Ordinal);
+
+    /// <summary>
+    /// True when two paths may name the same file: equal ignoring case. For "is this the file I
+    /// am about to overwrite?" checks, where treating distinct files as one is the safe direction.
+    /// </summary>
+    public static bool MaybeSamePath(string a, string b) =>
+        string.Equals(Normalize(a), Normalize(b), StringComparison.OrdinalIgnoreCase);
+
+    private static string Normalize(string path) => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
     /// <summary>
     /// Quotes a field when needed. Line breaks are refused rather than quoted: no valid field

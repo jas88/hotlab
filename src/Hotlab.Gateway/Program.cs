@@ -11,7 +11,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 // Configuration sources (later wins): appsettings.json, appsettings.{Environment}.json,
-// $HOTLAB_CONFIG_DIR/appsettings.json (default /etc/hotlab, if that directory exists),
+// $HOTLAB_CONFIG_DIR/appsettings.json (must exist if set; default /etc/hotlab, if present),
 // systemd credentials in $CREDENTIALS_DIRECTORY (file name = key, "__" for ":"),
 // environment variables (e.g. Hotlab__Proxmox__TokenSecret), command line.
 // Production note: the Proxmox token secret and the routing-token signing key

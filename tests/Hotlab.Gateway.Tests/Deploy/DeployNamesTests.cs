@@ -56,7 +56,7 @@ public sealed class DeployNamesTests
 
         Assert.NotEqual(a, b);
         Assert.Equal(a, DeployNames.VmName(deployment, new string('u', 31) + "a"));
-        Assert.All(new[] { a, b }, n => Assert.Matches("^hotlab-d+-u*-?[0-9a-f]{8}$", n));
+        Assert.All(new[] { a, b }, n => Assert.Matches("^hotlab-d+-u*-?[0-9a-f]{16}$", n));
         Assert.All(new[] { a, b }, n => Assert.Equal(63, n.Length));
         Assert.Equal("hotlab-lab-alice", DeployNames.VmName("lab", "alice")); // short names unchanged
     }

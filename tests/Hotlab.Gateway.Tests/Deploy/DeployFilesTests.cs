@@ -150,6 +150,43 @@ public sealed class DeployFilesTests : IDisposable
             Assert.Equal(AtomicFile.PrivateFile, Mode(path));
     }
 
+    [Theory]
+    [InlineData("../victim")]
+    [InlineData("../../etc/x")]
+    [InlineData("sub/alice")]
+    public void Rdp_path_never_leaves_the_output_directory(string user) =>
+        Assert.Throws<InvalidDataException>(() => DeploymentOutputs.RdpPath(_temp.Path, user));
+
+    [Fact]
+    public void SamePath_is_ordinal_and_MaybeSamePath_ignores_case()
+    {
+        var a = _temp.Combine("users.json");
+        var b = _temp.Combine("USERS.json");
+        Assert.True(DeploymentOutputs.SamePath(a, _temp.Combine("x", "..", "users.json")));
+        Assert.False(DeploymentOutputs.SamePath(a, b));
+        Assert.True(DeploymentOutputs.MaybeSamePath(a, b));
+    }
+
+    [Fact]
+    public void Private_directory_refuses_symbolic_links()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+        var real = _temp.Combine("real");
+        Directory.CreateDirectory(real);
+        var link = _temp.Combine("link");
+        Directory.CreateSymbolicLink(link, real);
+        var dangling = _temp.Combine("dangling");
+        Directory.CreateSymbolicLink(dangling, _temp.Combine("missing"));
+
+        Assert.Throws<IOException>(() => AtomicFile.EnsurePrivateDirectory(link));
+        Assert.Throws<IOException>(() => AtomicFile.EnsurePrivateDirectory(dangling));
+        Assert.False(Directory.Exists(_temp.Combine("missing")));
+        Assert.False(AtomicFile.EnsurePrivateDirectory(real));
+        Assert.True(AtomicFile.EnsurePrivateDirectory(_temp.Combine("new")));
+        Assert.Equal(AtomicFile.PrivateDirectory, Mode(_temp.Combine("new")));
+    }
+
     [Fact]
     public void RdpFileRenderer_renders_and_rejects_line_breaks()
     {

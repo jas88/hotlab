@@ -91,6 +91,7 @@ public sealed class DeployCommandTests : IDisposable
     [InlineData("Hotlab:Deploy:AgentTimeout", "-00:00:01")]
     [InlineData("Hotlab:Deploy:CommandTimeout", "00:00:00")]
     [InlineData("Hotlab:Deploy:ShutdownTimeout", "-00:01:00")]
+    [InlineData("Hotlab:Deploy:ShutdownTimeout", "49.17:02:47.294")] // the timer maximum, but not with the grace added
     [InlineData("Hotlab:Tokens:DefaultLifetime", "00:00:00")]
     [InlineData("Hotlab:Tokens:ClockSkew", "-00:00:01")]
     public async Task Deploy_rejects_invalid_settings_before_cloning(string setting, string value)
@@ -100,6 +101,15 @@ public sealed class DeployCommandTests : IDisposable
         Assert.Equal(1, result.Code);
         Assert.Contains(setting.Split(':')[^1], result.Err, StringComparison.Ordinal);
         Assert.Empty(_backend.Calls);
+    }
+
+    [Fact]
+    public void Shutdown_timeout_leaves_room_for_the_grace_period()
+    {
+        var max = Hotlab.Gateway.Configuration.OptionsValidation.MaxTimeout;
+        Assert.Null(new DeployTimings { ShutdownTimeout = max - DeployTimings.ShutdownGrace }.Validate());
+        Assert.Contains("ShutdownTimeout", new DeployTimings { ShutdownTimeout = max }.Validate(), StringComparison.Ordinal);
+        Assert.NotNull(new DeployTimings { ShutdownTimeout = TimeSpan.MaxValue }.Validate());
     }
 
     [Fact]

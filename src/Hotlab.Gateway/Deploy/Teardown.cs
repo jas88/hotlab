@@ -32,9 +32,10 @@ public sealed class Teardown
         DeploymentManifest? manifest;
         try
         {
+            // Validation (users, usersFileTarget, ...) happens here, before anything is destroyed.
             manifest = DeploymentManifest.Load(outDir);
         }
-        catch (InvalidDataException ex)
+        catch (Exception ex) when (IsFileError(ex))
         {
             _log.Error(ex.Message);
             return 1;
@@ -93,7 +94,8 @@ public sealed class Teardown
     }
 
     private static bool IsFileError(Exception ex) =>
-        ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException;
+        ex is IOException or UnauthorizedAccessException or InvalidDataException or JsonException
+            or ArgumentException or NotSupportedException; // PathTooLongException is an IOException
 
     private async Task<bool> DestroyUserAsync(DeploymentState state, DeployedUser row, CancellationToken ct)
     {
@@ -105,7 +107,10 @@ public sealed class Teardown
 
         try
         {
-            var rule = new VmOwnershipRule(state.Manifest.Pool, RequireTag: true, ExpectedName: null);
+            // A partial clone that was never tagged is recognised by pool and recorded name instead.
+            var rule = row is { UntaggedClone: true, VmName: { } name }
+                ? new VmOwnershipRule(state.Manifest.Pool, RequireTag: false, name)
+                : new VmOwnershipRule(state.Manifest.Pool, RequireTag: true, ExpectedName: null);
             var check = await VmCleanup.CheckAsync(_backend, rule, vmId, ct).ConfigureAwait(false);
             if (check.Exists && !check.Owned)
             {
@@ -122,6 +127,7 @@ public sealed class Teardown
             state.Update(row, r =>
             {
                 r.Status = DeployStatus.Destroyed;
+                r.UntaggedClone = false;
                 r.Error = null;
             });
             return true;
@@ -159,13 +165,13 @@ public sealed class Teardown
         foreach (var row in destroyed)
         {
             state.Passwords.Remove(row.User);
-            File.Delete(Path.Combine(outDir, DeploymentOutputs.RdpFileName(row.User)));
+            DeploymentOutputs.DeleteRdp(outDir, row.User);
         }
         DeploymentOutputs.WritePasswords(outDir, state.Passwords.Values);
 
-        // When the gateway users file is this users.json, it is handled below (or kept).
+        // When the gateway users file is (or may be) this users.json, it is handled below (or kept).
         var usersJson = Path.Combine(outDir, DeploymentOutputs.UsersJsonFile);
-        if (manifest.UsersFileTarget is null || !DeploymentOutputs.SamePath(manifest.UsersFileTarget, usersJson))
+        if (manifest.UsersFileTarget is null || !DeploymentOutputs.MaybeSamePath(manifest.UsersFileTarget, usersJson))
         {
             DeploymentOutputs.WriteUsersJson(outDir, manifest.Users
                 .Where(u => u.Status == DeployStatus.Deployed && u.VmId is not null)

@@ -4,15 +4,14 @@ Source: https://github.com/jas88/hotlab
 
 Files: *
 Copyright: 2026 James A Sutherland
-License: AGPL-3.0-or-later
-
-Files: usr/lib/hotlab-gateway/Hotlab.Gateway
-Copyright: 2026 James A Sutherland
            .NET Foundation and Contributors
 License: AGPL-3.0-or-later and MIT
-Comment: The executable is a self-contained .NET single-file bundle. The hotlab
- code in it is AGPL-3.0-or-later; the bundled .NET runtime and
- Microsoft.Extensions libraries are MIT.
+Comment: The hotlab source code is Copyright 2026 James A Sutherland and
+ licensed AGPL-3.0-or-later. The packaged executable
+ (/usr/lib/hotlab-gateway/Hotlab.Gateway) is a self-contained .NET single-file
+ build: besides the hotlab code it contains the .NET runtime and the
+ Microsoft.Extensions libraries, Copyright .NET Foundation and Contributors and
+ licensed MIT (see below).
 
 License: MIT
  Permission is hereby granted, free of charge, to any person obtaining a copy

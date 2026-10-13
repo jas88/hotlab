@@ -44,14 +44,20 @@ public sealed partial class Deployer
                 return false;
             }
 
-            addressChanged = manifest.Address.Length > 0 &&
-                !string.Equals(manifest.Address, request.Address, StringComparison.Ordinal);
-            if (addressChanged && !request.Force)
+            // A forced address change only becomes the manifest's address once every existing
+            // .rdp file has been regenerated (RegenerateRdpFiles); until then it is pending, and
+            // any re-run regenerates them all for whichever address it is given.
+            bool changing = !string.Equals(manifest.Address, request.Address, StringComparison.Ordinal);
+            bool resuming = string.Equals(manifest.PendingAddress, request.Address, StringComparison.Ordinal);
+            if (changing && !resuming && !request.Force)
             {
-                error = $"{manifestPath} was deployed with --address {manifest.Address}; pass --force to change it " +
-                    "(every deployed user's .rdp file is then regenerated with a new token).";
+                error = $"{manifestPath} was deployed with --address {manifest.Address}" +
+                    (manifest.PendingAddress is { } pending ? $" (an unfinished change to {pending} is pending)" : "") +
+                    "; pass --force to change it (every deployed user's .rdp file is then regenerated with a new token).";
                 return false;
             }
+            addressChanged = changing || manifest.PendingAddress is not null;
+            manifest.PendingAddress = addressChanged ? request.Address : null;
         }
         else
         {
@@ -61,13 +67,13 @@ public sealed partial class Deployer
                 Name = name,
                 SourceVmId = request.SourceVmId,
                 Node = request.Node,
+                Address = request.Address,
                 Created = now,
                 Updated = now,
             };
         }
 
         manifest.Pool = DeployNames.PoolId(name);
-        manifest.Address = request.Address;
         return true;
     }
 
@@ -90,7 +96,10 @@ public sealed partial class Deployer
         return false;
     }
 
-    /// <summary>After an --address change: rewrites the .rdp files of users not (re)deployed in this run.</summary>
+    /// <summary>
+    /// After an --address change: rewrites the .rdp files of users not (re)deployed in this run,
+    /// then (and only then) records the new address.
+    /// </summary>
     private void RegenerateRdpFiles(DeployRequest request, DeploymentState state, IReadOnlyCollection<string> deployedNow)
     {
         var manifest = state.Manifest;
@@ -101,9 +110,12 @@ public sealed partial class Deployer
         {
             var token = _tokens.Mint(row.User, request.Lifetime);
             DeploymentOutputs.WriteRdp(state.OutDir, row.User,
-                RdpFileRenderer.Render(manifest.Address, row.GuestAccount, token));
+                RdpFileRenderer.Render(request.Address, row.GuestAccount, token));
         }
-        _log.Info($"Address changed to {manifest.Address}: regenerated {rows.Count} existing .rdp file(s).");
+        manifest.Address = request.Address;
+        manifest.PendingAddress = null;
+        state.Save();
+        _log.Info($"Address changed to {request.Address}: regenerated {rows.Count} existing .rdp file(s).");
     }
 
     private bool CheckConflicts(DeployRequest request, DeploymentManifest manifest, string target)

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Installs a hotlab-gateway .deb in a clean Debian system (run as root, e.g. in a
-# debian:12 or debian:13 container) and checks it: lintian, the service account and file
-# permissions, the systemd unit, that the binary runs with only the declared dependencies,
-# and remove/purge behaviour.
+# debian:12 or debian:13 container) and checks it: the service account and file permissions,
+# the systemd unit, that the binary runs with only the declared dependencies installed, then
+# (after installing lintian) lintian, and remove/purge behaviour.
 #
 #   docker run --rm -v "$PWD:/work" -w /work debian:12 scripts/check-deb.sh artifacts/hotlab-gateway_*.deb
 set -euo pipefail
@@ -17,13 +17,6 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 step "Install (pulls in only the declared dependencies)"
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends "$deb"
-endstep
-
-step "lintian"
-apt-get install -y -qq --no-install-recommends lintian >/dev/null
-lintian --version
-# Warnings fail the check as well as errors; overrides are in packaging/lintian-overrides.
-lintian --fail-on error,warning --display-info --info "$deb"
 endstep
 
 step "Account and permissions"
@@ -69,6 +62,15 @@ cat "$creds/listener.log"
 [ "${listening:-0}" = 1 ] || fail "listener did not start"
 grep -q 'Loading user map from /etc/hotlab/users.json' "$creds/listener.log" || fail "users file not loaded"
 rm -rf "$creds"
+endstep
+
+step "lintian"
+# Installed only now, after the smoke tests, so that lintian's own dependencies can't mask a
+# missing runtime dependency of the package.
+apt-get install -y -qq --no-install-recommends lintian >/dev/null
+lintian --version
+# Warnings fail the check as well as errors; overrides are in packaging/lintian-overrides.
+lintian --fail-on error,warning --display-info --info "$deb"
 endstep
 
 step "remove keeps /etc/hotlab, purge deletes it"

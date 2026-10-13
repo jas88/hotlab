@@ -24,8 +24,8 @@ public static partial class DeployNames
 
     private const int MaxDnsLabelLength = 63;
 
-    /// <summary>Hex digits of the disambiguating hash appended to truncated VM names.</summary>
-    private const int VmNameHashLength = 8;
+    /// <summary>Hex digits (64 bits) of the disambiguating hash appended to truncated VM names.</summary>
+    private const int VmNameHashLength = 16;
 
     /// <summary>Accounts that must never be (re)used for a lab user.</summary>
     private static readonly HashSet<string> Reserved = new(StringComparer.Ordinal) { "root" };
@@ -83,8 +83,9 @@ public static partial class DeployNames
 
     /// <summary>
     /// The VM name for one user: <c>hotlab-&lt;deployment&gt;-&lt;user&gt;</c>, as a valid DNS label.
-    /// A name that would exceed 63 characters is shortened and suffixed with a short hash of
-    /// the full (deployment, user) pair, so distinct users never share a name.
+    /// A name that would exceed 63 characters is shortened and suffixed with a 64-bit hash of
+    /// the full (deployment, user) pair, so distinct users sharing a name is vanishingly
+    /// unlikely (probabilistic, not guaranteed: a collision needs about 2^32 long names).
     /// </summary>
     public static string VmName(string deployment, string user)
     {

@@ -53,23 +53,56 @@ public static class AtomicFile
 
     /// <summary>
     /// Creates <paramref name="path"/> (0700 on Unix) if missing. Returns true when it was
-    /// created; an existing directory's permissions are left alone.
+    /// created; an existing directory's permissions are left alone. A symbolic link is refused,
+    /// whether it was there already or appeared while the directory was being created (deploy
+    /// may run as root, and a path-based chmod would follow the link).
     /// </summary>
+    /// <remarks>
+    /// Residual risk: someone able to write to the parent directory can still swap the
+    /// directory for a link after these checks; keep output directories under a parent that
+    /// only trusted users can write to.
+    /// </remarks>
+    /// <exception cref="IOException"><paramref name="path"/> is a symbolic link or not a directory.</exception>
     public static bool EnsurePrivateDirectory(string path)
     {
-        if (Directory.Exists(path))
+        ArgumentException.ThrowIfNullOrEmpty(path);
+        path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        if (Path.Exists(path) || IsLink(path))
+        {
+            EnsureRealDirectory(path);
             return false;
+        }
+
         if (OperatingSystem.IsWindows())
         {
             Directory.CreateDirectory(path);
+            EnsureRealDirectory(path);
+            return true;
         }
-        else
+
+        // The create mode is filtered by the umask, which can only remove bits: the result is
+        // never group/other accessible, so a chmod (path-based, following links) is only needed
+        // when the umask also stripped owner bits.
+        Directory.CreateDirectory(path, PrivateDirectory);
+        EnsureRealDirectory(path);
+        if (File.GetUnixFileMode(path) != PrivateDirectory)
         {
-            Directory.CreateDirectory(path, PrivateDirectory);
-            // The create mode is filtered by the umask (which may even strip owner bits); set it explicitly.
+            EnsureRealDirectory(path);
             File.SetUnixFileMode(path, PrivateDirectory);
         }
         return true;
+    }
+
+    /// <summary>True when <paramref name="path"/> itself is a symbolic link (lstat semantics; dangling links included).</summary>
+    private static bool IsLink(string path) => new FileInfo(path).LinkTarget is not null;
+
+    private static void EnsureRealDirectory(string path)
+    {
+        var info = new DirectoryInfo(path);
+        if (info.LinkTarget is not null)
+            throw new IOException($"{path} is a symbolic link; refusing to use it as the output directory.");
+        if (!info.Exists)
+            throw new IOException($"{path} is not a directory.");
     }
 
     /// <summary>True when an existing directory is accessible to group or others (Unix only).</summary>

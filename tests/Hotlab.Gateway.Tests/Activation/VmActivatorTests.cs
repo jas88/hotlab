@@ -366,6 +366,35 @@ public class VmActivatorTests
     }
 
     [Fact]
+    public async Task Unreachable_agent_addresses_are_logged_each_round_and_warned_once_persistent()
+    {
+        var control = new FakeVmControl { AgentAddresses = ["10.0.0.1", "10.0.0.2"] };
+        var time = new ManualTimeoutProvider(ManualTimeout);
+        var rounds = 0;
+        var probe = new EndpointProbe(ep =>
+        {
+            if (!ep.Address.Equals(IPAddress.Parse("10.0.0.2")))
+                return false;
+            rounds++;
+            // 16s pass during round 3, so it warns; the clock is then frozen again, so rounds 4-5 do not.
+            if (rounds == 3)
+                time.AdvanceTimestamp(TimeSpan.FromSeconds(16));
+            return rounds == 6;
+        });
+        var log = new CapturingLogger<VmActivator>();
+
+        var endpoint = await Create(control, probe, logger: log, time: time).EnsureReadyAsync(Target, CancellationToken.None);
+
+        Assert.Equal(IPAddress.Parse("10.0.0.2"), endpoint.Address);
+        var unreachable = log.Entries.Where(e => e.Contains("accepted connections on port 3389", StringComparison.Ordinal)).ToList();
+        Assert.Equal(5, unreachable.Count);
+        Assert.All(unreachable, e => Assert.Contains("10.0.0.1, 10.0.0.2", e, StringComparison.Ordinal));
+        var warning = Assert.Single(unreachable, e => e.StartsWith("Warning:", StringComparison.Ordinal));
+        Assert.Same(unreachable[2], warning);
+        Assert.Equal(4, unreachable.Count(e => e.StartsWith("Debug:", StringComparison.Ordinal)));
+    }
+
+    [Fact]
     public async Task Timeout_during_start_reports_starting_stage()
     {
         var time = new ManualTimeoutProvider(ManualTimeout);
@@ -428,7 +457,13 @@ public class VmActivatorTests
     {
         private readonly List<ManualTimer> _manual = [];
 
-        public override long GetTimestamp() => 0;
+        private long _timestamp;
+
+        public override long GetTimestamp() => Interlocked.Read(ref _timestamp);
+
+        /// <summary>Moves the (otherwise frozen) monotonic clock forward.</summary>
+        public void AdvanceTimestamp(TimeSpan by) =>
+            Interlocked.Add(ref _timestamp, (long)(by.TotalSeconds * TimestampFrequency));
 
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {

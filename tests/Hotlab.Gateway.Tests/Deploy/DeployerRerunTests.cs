@@ -138,20 +138,29 @@ public sealed class DeployerRerunTests : IDisposable
         Assert.Contains("guest agent did not respond", result.Err, StringComparison.Ordinal);
     }
 
-    [Fact]
-    public async Task Failure_cleanup_never_destroys_vm_outside_the_pool()
+    [Theory]
+    [InlineData(System.Net.HttpStatusCode.BadRequest, true)] // a 4xx: definitely rejected
+    [InlineData(System.Net.HttpStatusCode.InternalServerError, false)] // a 5xx: possibly accepted
+    public async Task Failure_cleanup_never_destroys_vm_outside_the_pool(System.Net.HttpStatusCode status, bool rejected)
     {
         // Someone else grabs the VMID between nextid and clone: the clone fails, and the
         // foreign VM (not in our pool) must survive.
         _backend.Vms[200] = new FakeVm(200, FakeDeployBackend.Node, "someone-elses");
         _backend.ForcedNextId = 200;
+        _backend.CloneConflictStatus = status;
 
         var result = await DeployAsync(_backend, Request(Out, "alice"));
 
         Assert.Equal(1, result.Code);
         Assert.True(_backend.Vms.ContainsKey(200));
         Assert.DoesNotContain("destroy 200", _backend.Calls);
-        Assert.Null(Manifest(Out).Find("alice")!.VmId); // the rejected id is not recorded as ours
+        // A rejected id is not recorded as ours; a possibly accepted one is kept for the
+        // (pool- and name-guarded) cleanup.
+        Assert.Equal(rejected ? null : 200, Manifest(Out).Find("alice")!.VmId);
+
+        _backend.ForcedNextId = null;
+        Assert.Equal(0, (await DeployAsync(_backend, Request(Out, "alice"))).Code);
+        Assert.Equal("someone-elses", _backend.Vms[200].Name);
     }
 
     [Fact]
@@ -232,6 +241,9 @@ public sealed class DeployerRerunTests : IDisposable
         Assert.Contains("--users-file-target", result.Err, StringComparison.Ordinal);
         Assert.False(File.Exists(other));
         Assert.Equal(Target, Manifest(Out).UsersFileTarget);
+        // A case-only difference counts as a change (it is a different file on a case-sensitive volume).
+        var caseOnly = _temp.Combine("gateway", "USERS.json");
+        Assert.Equal(2, (await DeployAsync(_backend, request with { UsersFileTarget = caseOnly })).Code);
         // The same target, spelt differently, is not a change.
         var same = Path.Combine(_temp.Path, "gateway", "..", "gateway", "users.json");
         Assert.Equal(0, (await DeployAsync(_backend, request with { UsersFileTarget = same })).Code);

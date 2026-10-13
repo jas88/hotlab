@@ -107,7 +107,11 @@ jobs:
         with:
           path: ${{ env.NUGET_PACKAGES }}
           key: nuget-${{ runner.os }}-${{ matrix.rid }}-${{ hashFiles('**/*.csproj', '**/Directory.*.props', 'global.json') }}
-          restore-keys: nuget-${{ runner.os }}-${{ matrix.rid }}-
+          # Fall back to build-test's cache (key nuget-<os>-<hash>), which has every package
+          # except the runtime packs for this RID.
+          restore-keys: |
+            nuget-${{ runner.os }}-${{ matrix.rid }}-
+            nuget-${{ runner.os }}-
       # Self-contained single file with ReadyToRun (faster start for the CLI verbs). Not
       # trimmed: configuration binding and System.Text.Json use reflection (IL2026/IL2091).
       - name: Publish ${{ matrix.rid }}

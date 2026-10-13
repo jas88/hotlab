@@ -107,7 +107,8 @@ rejected. A VM name that would exceed 63 characters is shortened and given a sho
 suffix, so two users never share a name.
 
 If `--out` does not exist, it is created with mode 0700. The permissions of an existing
-directory are not changed; deploy only warns if group or others can access it.
+directory are not changed; deploy only warns if group or others can access it. A symbolic
+link as `--out` is refused.
 `~/labs/net101` then contains:
 
 - `<user>.rdp`: the gateway address, `username:s:<guest account>`, and a signed routing token
@@ -121,23 +122,28 @@ To have the gateway pick up mappings without a restart, point it at a users file
 reload-on-change. With `--users-file-target`, deploy merges into it atomically, holding a lock
 on `<users file>.lock`, which is created next to it. Deploy refuses to remap a user who is
 already mapped to a different VM, unless you pass `--force`. A malformed entry for a user is
-overwritten with a warning. Once a deployment has merged into a users file, it cannot be
-moved to another one, even with `--force`. Tear it down first.
+overwritten with a warning. When a user's redeploy fails, their old mapping to this
+deployment's VM is removed from the file. Once a deployment has merged into a users file, it
+cannot be moved to another one, even with `--force` (paths are compared case-sensitively, so a
+case-only change counts as a move). Tear it down first.
 
 Re-running the same command is safe:
 
-- Users whose recorded VM still exists are skipped, and their rows, passwords and `.rdp` files
-  are kept.
+- Users whose recorded VM still exists, in the pool, tagged `hotlab` and with the expected
+  name, are skipped, and their rows, passwords and `.rdp` files are kept.
 - New names are deployed.
 - Failed users are retried.
 - A different `--address` is refused unless you pass `--force`. Then every `.rdp` file is
-  regenerated with a fresh token.
+  regenerated with a fresh token. The new address is recorded as pending until every file has
+  been rewritten, so if that is interrupted, re-running with the new address finishes it
+  without `--force`.
 
 A user who fails is recorded as `failed`, and the other users carry on. The exit code is 1 if
 any user failed. Deploy then tries to destroy the user's partial clone, but only if it is still
 in the deployment's pool with the expected name. Cleanup is best-effort. If that ownership
-check fails, or Proxmox returns an error, the clone is left in place and deploy prints
-`clean it up manually` (or `not destroying it`). To find leftovers, list pool
+check fails, or Proxmox returns an error, the clone is left in place and deploy says so. A
+clone that never got its `hotlab` tag is remembered in `deployment.json`, and the next deploy
+or teardown retries removing it by pool and name. To find leftovers, list pool
 `hotlab-<name>`: clones go straight into it, and are tagged `hotlab` once the clone finishes.
 Any member that `deployment.json` does not record as deployed is a leftover.
 
@@ -217,7 +223,9 @@ environment variables (`Hotlab__Section__Key`).
        --name=Hotlab__Tokens__SigningKey - /etc/credstore.encrypted/Hotlab__Tokens__SigningKey
    ```
 
-3. Load the secrets into the service. Run `sudo systemctl edit hotlab-gateway` and add:
+3. Load the secrets into the service. The packaged unit only shows these lines as comments, so
+   nothing is loaded until you add them in a drop-in: run `sudo systemctl edit hotlab-gateway`
+   and add:
 
    ```ini
    [Service]
@@ -248,9 +256,9 @@ whole file system is read-only to it.
 
 Run `deploy` and `teardown` as root, not as the `hotlab` user: they update
 `/etc/hotlab/users.json`, which `hotlab` can only read. They read
-`/etc/hotlab/appsettings.json` like the service does. The service's credentials are not available to these commands, so give them the
-**deploy** token (which has the clone, destroy and agent privileges listed above) and the
-signing key separately. One way is to run the command in a transient unit that loads
+`/etc/hotlab/appsettings.json` like the service does. The service's credentials are not
+available to these commands, so give them the **deploy** token (which has the clone, destroy
+and agent privileges listed above) and the signing key separately. One way is to run the command in a transient unit that loads
 encrypted credentials, so the secrets stay out of the environment:
 
 ```sh
@@ -269,7 +277,7 @@ sudo systemd-run --pipe --wait --collect --same-dir \
 
 Simpler, but the secrets go into the process environment:
 `sudo env Hotlab__Proxmox__TokenId='hotlab@pve!deploy' Hotlab__Proxmox__TokenSecret=... Hotlab__Tokens__SigningKey="$(sudo systemd-creds decrypt /etc/credstore.encrypted/Hotlab__Tokens__SigningKey -)" hotlab-gateway deploy ...`.
-To use a different settings directory, set `HOTLAB_CONFIG_DIR`. The running gateway picks up
+To use a different settings directory, set `HOTLAB_CONFIG_DIR` (it must exist and be readable, or the gateway refuses to start). The running gateway picks up
 `users.json` changes without a restart.
 
 ### Upgrade, remove, purge

@@ -177,6 +177,23 @@ public sealed class TeardownTests : IDisposable
     [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","users":[null]}""")]
     [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","users":[{"user":null,"status":"deployed"}]}""")]
     [InlineData("""{"name":null,"node":"pve1","users":[]}""")]
+    // Missing properties must not keep their initializers: a missing status would read as "cloning".
+    [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","users":[{"user":"alice","guestAccount":"alice","vmId":200,"vmName":"x"}]}""")]
+    [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","users":[{"user":"alice","status":"failed","vmId":200}]}""")]
+    [InlineData("""{"name":"lab","node":"pve1","address":"gw","users":[]}""")]
+    [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","users":[]}""")]
+    // Empty strings are no better.
+    [InlineData("""{"name":"lab","node":"pve1","pool":"","address":"gw","users":[]}""")]
+    [InlineData("""{"name":"lab","node":"","pool":"hotlab-lab","address":"gw","users":[]}""")]
+    [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","users":[{"user":"alice","guestAccount":"","status":"failed"}]}""")]
+    [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","users":[{"user":"alice","guestAccount":"alice","status":"bogus"}]}""")]
+    // Users name files in the output directory.
+    [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","users":[{"user":"../../victim","guestAccount":"a","status":"deployed"}]}""")]
+    [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","users":[{"user":"Alice","guestAccount":"a","status":"deployed"}]}""")]
+    [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","users":[{"user":"alice","guestAccount":"a","status":"failed"},{"user":"alice","guestAccount":"a","status":"failed"}]}""")]
+    // An unusable users file target is caught before anything is destroyed.
+    [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","usersFileTarget":"relative.json","users":[]}""")]
+    [InlineData("""{"name":"lab","node":"pve1","pool":"hotlab-lab","address":"gw","usersFileTarget":"/tmp/a\u0000b","users":[]}""")]
     public async Task Structurally_invalid_manifest_is_reported(string json)
     {
         Directory.CreateDirectory(Out);

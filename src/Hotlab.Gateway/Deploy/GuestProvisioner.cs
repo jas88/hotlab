@@ -82,7 +82,7 @@ public sealed class GuestProvisioner
         using (var shutdownCts = CancellationTokenSource.CreateLinkedTokenSource(ct))
         {
             // Proxmox enforces the timeout itself; the margin covers task start-up and polling.
-            shutdownCts.CancelAfter(_timings.ShutdownTimeout + TimeSpan.FromSeconds(30));
+            shutdownCts.CancelAfter(_timings.ShutdownTimeout + DeployTimings.ShutdownGrace);
             try
             {
                 exit = await _backend.ShutdownAsync(node, vmId, _timings.ShutdownTimeout, shutdownCts.Token)

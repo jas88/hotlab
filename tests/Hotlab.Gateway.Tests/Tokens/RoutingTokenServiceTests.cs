@@ -242,4 +242,67 @@ public sealed class RoutingTokenServiceTests
         Assert.Contains("SigningKey",
             new RoutingTokenOptions { SigningKey = "not base64!" }.Validate(), StringComparison.Ordinal);
     }
+
+    [Fact]
+    public void Options_Validate_RejectsUnboundedLifetimeAndSkew()
+    {
+        Assert.Null(new RoutingTokenOptions { DefaultLifetime = RoutingTokenOptions.MaxLifetime }.Validate());
+        Assert.Null(new RoutingTokenOptions { ClockSkew = RoutingTokenOptions.MaxClockSkew }.Validate());
+        Assert.Contains("DefaultLifetime",
+            new RoutingTokenOptions { DefaultLifetime = TimeSpan.MaxValue }.Validate(), StringComparison.Ordinal);
+        Assert.Contains("DefaultLifetime",
+            new RoutingTokenOptions { DefaultLifetime = RoutingTokenOptions.MaxLifetime + TimeSpan.FromSeconds(1) }.Validate(),
+            StringComparison.Ordinal);
+        Assert.Contains("ClockSkew",
+            new RoutingTokenOptions { ClockSkew = TimeSpan.MaxValue }.Validate(), StringComparison.Ordinal);
+        Assert.Contains("ClockSkew",
+            new RoutingTokenOptions { ClockSkew = RoutingTokenOptions.MaxClockSkew + TimeSpan.FromSeconds(1) }.Validate(),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void MintRdpCommand_SharesMaxLifetime()
+    {
+        Assert.Equal(RoutingTokenOptions.MaxLifetime, MintRdpCommand.MaxLifetime);
+    }
+
+    [Fact]
+    public void Mint_WithUnvalidatedHugeDefaultLifetime_ThrowsArgumentOutOfRange_NotOverflow()
+    {
+        var service = new RoutingTokenService(Options.Create(new RoutingTokenOptions
+        {
+            SigningKey = Key,
+            DefaultLifetime = TimeSpan.MaxValue,
+        }), _time);
+        Assert.Throws<ArgumentOutOfRangeException>(() => service.Mint("alice"));
+        Assert.Throws<ArgumentOutOfRangeException>(() => service.Mint("alice", TimeSpan.MaxValue));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => service.Mint("alice", RoutingTokenOptions.MaxLifetime + TimeSpan.FromSeconds(1)));
+        Assert.Equal(TokenStatus.Valid, service.Validate(service.Mint("alice", RoutingTokenOptions.MaxLifetime)).Status);
+    }
+
+    [Fact]
+    public void Validate_WithUnvalidatedHugeClockSkew_DoesNotOverflow()
+    {
+        var token = Create(_time).Mint("alice", TimeSpan.FromHours(1));
+        var service = Create(_time, skew: TimeSpan.MaxValue);
+
+        Assert.Equal(TokenStatus.Valid, service.Validate(token).Status);
+
+        // The skew is clamped to MaxClockSkew, so a long-expired token is still rejected.
+        _time.Advance(TimeSpan.FromHours(1) + RoutingTokenOptions.MaxClockSkew + TimeSpan.FromSeconds(1));
+        var result = service.Validate(token);
+        Assert.Equal(TokenStatus.Invalid, result.Status);
+        Assert.Equal(TokenValidation.ReasonExpired, result.Reason);
+    }
+
+    [Fact]
+    public void Validate_TokenExpiringAtMaxDate_WithSkew_DoesNotOverflow()
+    {
+        // Year-9999 expiry plus skew used to overflow DateTimeOffset arithmetic.
+        _time.Now = new DateTimeOffset(9999, 12, 31, 0, 0, 0, TimeSpan.Zero);
+        var service = Create(_time, skew: RoutingTokenOptions.MaxClockSkew);
+        var token = service.Mint("alice", TimeSpan.FromHours(23));
+        Assert.Equal(TokenStatus.Valid, service.Validate(token).Status);
+    }
 }

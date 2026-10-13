@@ -19,7 +19,10 @@ public sealed partial class VmActivator : IVmActivator
 {
     private const string RunningStatus = "running";
 
-    /// <summary>Minimum gap between Warning-level logs of retried guest-agent failures.</summary>
+    /// <summary>
+    /// Minimum gap between Warning-level logs of retried guest-agent failures, and how long
+    /// reported addresses must stay unreachable before that is logged as a Warning.
+    /// </summary>
     private static readonly TimeSpan AgentWarningInterval = TimeSpan.FromSeconds(15);
 
     private readonly IVmControl _control;
@@ -198,10 +201,15 @@ public sealed partial class VmActivator : IVmActivator
     /// Each poll round asks the guest agent for its addresses and probes every usable one
     /// (in the order reported) on <see cref="VmTarget.Port"/>, returning the first that accepts
     /// a connection. Re-querying each round also follows an address that changes during boot.
+    /// A round whose probes all fail is logged at Debug (the RDP service routinely starts after
+    /// the agent); once that has lasted <see cref="AgentWarningInterval"/> it is logged as a
+    /// Warning, at most once per interval.
     /// </summary>
     private async Task<IPEndPoint> WaitForAgentEndpointAsync(VmTarget target, Progress progress, CancellationToken ct)
     {
         long? lastWarning = null;
+        long? unreachableSince = null;
+        long? lastUnreachableWarning = null;
         while (true)
         {
             IReadOnlyList<string>? addresses = null;
@@ -243,6 +251,21 @@ public sealed partial class VmActivator : IVmActivator
                         var endpoint = new IPEndPoint(address, target.Port);
                         if (await _probe.CanConnectAsync(endpoint, _options.ProbeTimeout, ct).ConfigureAwait(false))
                             return endpoint;
+                    }
+
+                    unreachableSince ??= _time.GetTimestamp();
+                    var probed = string.Join(", ", usable);
+                    var unreachableFor = _time.GetElapsedTime(unreachableSince.Value);
+                    if (unreachableFor >= AgentWarningInterval &&
+                        (lastUnreachableWarning is null ||
+                         _time.GetElapsedTime(lastUnreachableWarning.Value) >= AgentWarningInterval))
+                    {
+                        lastUnreachableWarning = _time.GetTimestamp();
+                        LogPortUnreachableWarning(target.VmId, target.Node, probed, target.Port, unreachableFor);
+                    }
+                    else
+                    {
+                        LogPortUnreachable(target.VmId, target.Node, probed, target.Port);
                     }
                 }
             }
@@ -313,6 +336,14 @@ public sealed partial class VmActivator : IVmActivator
 
     [LoggerMessage(Level = LogLevel.Debug, Message = "Guest agent on VM {VmId} ({Node}) reported no usable IPv4 address yet")]
     private partial void LogAgentNoAddress(int vmId, string node);
+
+    [LoggerMessage(Level = LogLevel.Debug,
+        Message = "VM {VmId} ({Node}): no reported address accepted connections on port {Port} (probed {Addresses})")]
+    private partial void LogPortUnreachable(int vmId, string node, string addresses, int port);
+
+    [LoggerMessage(Level = LogLevel.Warning,
+        Message = "VM {VmId} ({Node}): no reported address has accepted connections on port {Port} for {Elapsed} (probed {Addresses}); retrying")]
+    private partial void LogPortUnreachableWarning(int vmId, string node, string addresses, int port, TimeSpan elapsed);
 
     [LoggerMessage(Level = LogLevel.Information, Message = "VM {VmId} on {Node} ready at {Endpoint}")]
     private partial void LogReady(int vmId, string node, IPEndPoint endpoint);

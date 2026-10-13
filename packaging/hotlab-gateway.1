@@ -43,7 +43,9 @@ systemd credentials in
 (a file named
 .B Hotlab__Proxmox__TokenSecret
 supplies
-.BR Hotlab:Proxmox:TokenSecret ),
+.BR Hotlab:Proxmox:TokenSecret ;
+see
+.BR SECRETS ),
 environment variables such as
 .BR Hotlab__Tokens__SigningKey ,
 and the command line.
@@ -51,6 +53,35 @@ The user map is reloaded from
 .B $HOTLAB_USERS_FILE
 .RI ( /etc/hotlab/users.json
 for the service) when it changes.
+.SH SECRETS
+Encrypt the Proxmox token secret and the routing-token signing key, for example:
+.PP
+.RS
+.nf
+install \-d \-m 0700 /etc/credstore.encrypted
+systemd-creds encrypt \-\-name=Hotlab__Proxmox__TokenSecret \- \e
+    /etc/credstore.encrypted/Hotlab__Proxmox__TokenSecret
+systemd-creds encrypt \-\-name=Hotlab__Tokens__SigningKey \- \e
+    /etc/credstore.encrypted/Hotlab__Tokens__SigningKey
+.fi
+.RE
+.PP
+then load them into the service with a drop-in: run
+.B systemctl edit hotlab-gateway
+and add
+.PP
+.RS
+.nf
+[Service]
+LoadCredentialEncrypted=Hotlab__Proxmox__TokenSecret:/etc/credstore.encrypted/Hotlab__Proxmox__TokenSecret
+LoadCredentialEncrypted=Hotlab__Tokens__SigningKey:/etc/credstore.encrypted/Hotlab__Tokens__SigningKey
+.fi
+.RE
+.PP
+followed by
+.BR "systemctl restart hotlab-gateway" .
+systemd decrypts each credential into the service's
+.IR $CREDENTIALS_DIRECTORY .
 .SH FILES
 .TP
 .I /etc/hotlab/appsettings.json
@@ -61,8 +92,12 @@ User-to-VM map, maintained by
 .BR "deploy \-\-users\-file\-target" .
 .TP
 .I /etc/credstore.encrypted/
-Encrypted secrets loaded by the service (see
-.BR systemd-creds (1)).
+Suggested location for the secrets, encrypted with
+.BR systemd-creds (1).
+They are not loaded automatically: the packaged unit only documents the
+.B LoadCredentialEncrypted=
+lines, commented out (see
+.BR SECRETS ).
 .SH SEE ALSO
 .BR systemd-creds (1),
 .BR journalctl (1),

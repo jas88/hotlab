@@ -6,12 +6,16 @@
 #   scripts/build-deb.sh --version 1.2.3 --arch amd64 --publish-dir out/publish-amd64 --out-dir out
 #
 # Needs bash, GNU coreutils/findutils, gzip and dpkg-deb (Debian/Ubuntu). No debhelper.
+# git is optional. In a git checkout the maintainer, timestamp and changelog commit come from
+# the last commit. Elsewhere (e.g. an extracted source tarball) pass --maintainer or set
+# DEBFULLNAME and DEBEMAIL, and set SOURCE_DATE_EPOCH for a reproducible build (otherwise the
+# newest input file's modification time is used).
 # Maintainer scripts use deb-systemd-helper/deb-systemd-invoke from the essential
 # init-system-helpers package.
 set -euo pipefail
 
 PACKAGE=hotlab-gateway
-REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+REPO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 PACKAGING="$REPO_ROOT/packaging"
 
 usage() {
@@ -19,14 +23,23 @@ usage() {
 	exit 2
 }
 
+# Options that take a value: fail with the usage text, not a cryptic `shift` error, when the
+# value is missing.
+need_value() {
+	if [ "$2" -lt 2 ]; then
+		echo "error: $1 needs a value" >&2
+		usage
+	fi
+}
+
 version='' arch='' publish_dir='' out_dir="$REPO_ROOT/artifacts" maintainer=''
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--version) version=${2:-}; shift 2 ;;
-		--arch) arch=${2:-}; shift 2 ;;
-		--publish-dir) publish_dir=${2:-}; shift 2 ;;
-		--out-dir) out_dir=${2:-}; shift 2 ;;
-		--maintainer) maintainer=${2:-}; shift 2 ;;
+		--version) need_value "$1" $#; version=$2; shift 2 ;;
+		--arch) need_value "$1" $#; arch=$2; shift 2 ;;
+		--publish-dir) need_value "$1" $#; publish_dir=$2; shift 2 ;;
+		--out-dir) need_value "$1" $#; out_dir=$2; shift 2 ;;
+		--maintainer) need_value "$1" $#; maintainer=$2; shift 2 ;;
 		*) usage ;;
 	esac
 done
@@ -51,13 +64,58 @@ if [ -n "$unexpected" ]; then
 	exit 1
 fi
 
-if [ -z "$maintainer" ]; then
+# Is REPO_ROOT itself a git checkout with a commit (not just a directory inside some other
+# repository)?
+in_git=false
+if command -v git >/dev/null 2>&1 &&
+	[ "$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null)" = "$REPO_ROOT" ] &&
+	git -C "$REPO_ROOT" rev-parse -q --verify HEAD >/dev/null; then
+	in_git=true
+fi
+
+# Maintainer: --maintainer, then DEBFULLNAME/DEBEMAIL (as for dch), then the last commit's author.
+if [ -z "$maintainer" ] && [ -n "${DEBEMAIL:-}" ]; then
+	if [[ "$DEBEMAIL" == *'<'*'>' ]]; then
+		maintainer=$DEBEMAIL
+	elif [ -n "${DEBFULLNAME:-}" ]; then
+		maintainer="$DEBFULLNAME <$DEBEMAIL>"
+	fi
+fi
+if [ -z "$maintainer" ] && $in_git; then
 	maintainer=$(git -C "$REPO_ROOT" log -1 --format='%an <%ae>')
 fi
-# Reproducible timestamps: the commit time unless the caller set SOURCE_DATE_EPOCH.
-SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git -C "$REPO_ROOT" log -1 --format=%ct)}
+if [ -z "$maintainer" ]; then
+	echo "error: no maintainer: $REPO_ROOT is not a git checkout, so pass --maintainer 'Name <email>'" \
+		"or set DEBFULLNAME and DEBEMAIL" >&2
+	exit 2
+fi
+if ! [[ "$maintainer" =~ ^[^\<\>]+\ \<[^\<\>@]+@[^\<\>]+\>$ ]]; then
+	echo "error: maintainer '$maintainer' is not of the form 'Name <email>'" >&2
+	exit 2
+fi
+
+# Reproducible timestamps: SOURCE_DATE_EPOCH if set, else the commit time, else the newest
+# input file.
+if [ -z "${SOURCE_DATE_EPOCH:-}" ]; then
+	if $in_git; then
+		SOURCE_DATE_EPOCH=$(git -C "$REPO_ROOT" log -1 --format=%ct)
+	else
+		SOURCE_DATE_EPOCH=$(find "$PACKAGING" "$REPO_ROOT/README.md" "$publish_dir" -type f -printf '%T@\n' |
+			sort -n | tail -n 1 | cut -d. -f1)
+		echo "warning: not a git checkout and SOURCE_DATE_EPOCH is unset;" \
+			"using the newest input file's time ($SOURCE_DATE_EPOCH)" >&2
+	fi
+fi
+if ! [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
+	echo "error: SOURCE_DATE_EPOCH '$SOURCE_DATE_EPOCH' is not a number of seconds" >&2
+	exit 2
+fi
 export SOURCE_DATE_EPOCH
-commit=$(git -C "$REPO_ROOT" rev-parse --short=12 HEAD)
+if $in_git; then
+	changelog_entry="Build of commit $(git -C "$REPO_ROOT" rev-parse --short=12 HEAD)."
+else
+	changelog_entry="Build of version $version."
+fi
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -91,7 +149,7 @@ changelog_date=$(date -u -R -d "@$SOURCE_DATE_EPOCH")
 cat > "$work/changelog" <<EOF
 $PACKAGE ($version) unstable; urgency=medium
 
-  * Build of commit $commit.
+  * $changelog_entry
 
  -- $maintainer  $changelog_date
 EOF

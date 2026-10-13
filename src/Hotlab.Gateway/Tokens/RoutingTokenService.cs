@@ -60,7 +60,8 @@ public sealed class RoutingTokenService
     /// <exception cref="InvalidOperationException">Tokens are disabled (no signing key).</exception>
     /// <exception cref="ArgumentException">The user is empty, too long, or contains ':' or
     /// non-printable/non-ASCII characters.</exception>
-    /// <exception cref="ArgumentOutOfRangeException">The lifetime is not positive.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">The lifetime is not positive or exceeds
+    /// <see cref="RoutingTokenOptions.MaxLifetime"/>.</exception>
     public string Mint(string user, TimeSpan? lifetime = null)
     {
         ArgumentNullException.ThrowIfNull(user);
@@ -71,6 +72,7 @@ public sealed class RoutingTokenService
         var normalized = NormalizeUser(user);
         var life = lifetime ?? _options.DefaultLifetime;
         ArgumentOutOfRangeException.ThrowIfLessThanOrEqual(life, TimeSpan.Zero, nameof(lifetime));
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(life, RoutingTokenOptions.MaxLifetime, nameof(lifetime));
 
         long expiry = (_time.GetUtcNow() + life).ToUnixTimeSeconds();
         var payload = string.Create(CultureInfo.InvariantCulture, $"{Prefix}{Version}:{normalized}:{expiry}");
@@ -116,7 +118,10 @@ public sealed class RoutingTokenService
         if (!CryptographicOperations.FixedTimeEquals(expected, Encoding.ASCII.GetBytes(signature)))
             return TokenValidation.Invalid(TokenValidation.ReasonBadSignature, user, expiry);
 
-        if (_time.GetUtcNow() > expiry + _options.ClockSkew)
+        // Compare in Unix milliseconds: expirySeconds is capped at MaxUnixSeconds and the skew
+        // is clamped, so this cannot overflow even if the options were never validated.
+        long skewMs = (long)Math.Clamp(_options.ClockSkew.TotalMilliseconds, 0, RoutingTokenOptions.MaxClockSkew.TotalMilliseconds);
+        if (_time.GetUtcNow().ToUnixTimeMilliseconds() > (expirySeconds * 1000) + skewMs)
             return TokenValidation.Invalid(TokenValidation.ReasonExpired, user, expiry);
 
         return TokenValidation.Valid(user, expiry);

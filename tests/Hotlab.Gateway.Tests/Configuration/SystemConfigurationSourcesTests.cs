@@ -47,8 +47,69 @@ public sealed class SystemConfigurationSourcesTests : IDisposable
     {
         Assert.Equal(Path.GetFullPath(_configDir), SystemConfigurationSources.ResolveConfigDirectory(Env(), _configDir));
         Assert.Null(SystemConfigurationSources.ResolveConfigDirectory(Env(), _missingDir));
-        Assert.Equal(Path.GetFullPath(_missingDir),
-            SystemConfigurationSources.ResolveConfigDirectory(Env(configDir: _missingDir), _configDir));
+        Assert.Equal(Path.GetFullPath(_configDir),
+            SystemConfigurationSources.ResolveConfigDirectory(Env(configDir: _configDir), _missingDir));
+    }
+
+    [Fact]
+    public void ExplicitConfigDirectory_Missing_FailsNamingVariableAndPath()
+    {
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => SystemConfigurationSources.ResolveConfigDirectory(Env(configDir: _missingDir), _configDir));
+        Assert.Contains(SystemConfigurationSources.ConfigDirectoryVariable, ex.Message, StringComparison.Ordinal);
+        Assert.Contains(Path.GetFullPath(_missingDir), ex.Message, StringComparison.Ordinal);
+        Assert.Contains("does not exist", ex.Message, StringComparison.Ordinal);
+
+        var builder = new ConfigurationBuilder();
+        Assert.Throws<InvalidOperationException>(
+            () => SystemConfigurationSources.Add(builder, Env(configDir: _missingDir), _configDir));
+        Assert.Empty(builder.Sources);
+    }
+
+    [Fact]
+    public void ExplicitConfigDirectory_ThatIsAFile_Fails()
+    {
+        var file = Path.Combine(_root, "not-a-dir");
+        File.WriteAllText(file, "{}");
+
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => SystemConfigurationSources.ResolveConfigDirectory(Env(configDir: file), _missingDir));
+        Assert.Contains(SystemConfigurationSources.ConfigDirectoryVariable, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ExplicitConfigDirectory_Unreadable_FailsNamingVariableAndPath()
+    {
+        if (OperatingSystem.IsWindows() || Environment.UserName == "root")
+            return; // permission bits are not enforced there
+
+        var locked = Path.Combine(_root, "locked");
+        Directory.CreateDirectory(locked);
+        File.SetUnixFileMode(locked, UnixFileMode.None);
+        try
+        {
+            var ex = Assert.Throws<InvalidOperationException>(
+                () => SystemConfigurationSources.ResolveConfigDirectory(Env(configDir: locked), _missingDir));
+            Assert.Contains(SystemConfigurationSources.ConfigDirectoryVariable, ex.Message, StringComparison.Ordinal);
+            Assert.Contains(locked, ex.Message, StringComparison.Ordinal);
+            Assert.Contains("cannot be read", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.SetUnixFileMode(locked, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    [Fact]
+    public void ExplicitConfigDirectory_WithoutSettingsFile_IsAccepted()
+    {
+        var builder = new ConfigurationBuilder();
+
+        var (config, _) = SystemConfigurationSources.Add(builder, Env(configDir: _configDir), _missingDir);
+
+        Assert.Equal(Path.GetFullPath(_configDir), config);
+        using var root = (ConfigurationRoot)builder.Build();
+        Assert.Empty(root.AsEnumerable());
     }
 
     [Fact]
@@ -115,16 +176,16 @@ public sealed class SystemConfigurationSourcesTests : IDisposable
     }
 
     [Fact]
-    public void MissingFilesAndDirectories_AreOptional()
+    public void MissingDefaultDirectoryAndCredentials_AreOptional()
     {
         var builder = new ConfigurationBuilder();
 
         var (config, credentials) = SystemConfigurationSources.Add(
-            builder, Env(configDir: _missingDir, credentialsDir: Path.Combine(_root, "no-creds")), _configDir);
+            builder, Env(credentialsDir: Path.Combine(_root, "no-creds")), _missingDir);
 
-        Assert.NotNull(config);
+        Assert.Null(config);
         Assert.NotNull(credentials);
-        Assert.Equal(2, builder.Sources.Count);
+        Assert.Single(builder.Sources);
         using var root = (ConfigurationRoot)builder.Build();
         Assert.Empty(root.AsEnumerable());
     }

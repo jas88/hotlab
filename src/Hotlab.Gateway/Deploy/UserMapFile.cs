@@ -61,18 +61,37 @@ public static class UserMapFile
     }
 
     /// <summary>Adds or replaces mappings (atomic write; creates the file if needed).</summary>
-    public static void Merge(string path, IEnumerable<UserMapping> mappings)
+    public static void Merge(string path, IEnumerable<UserMapping> mappings) => Merge(path, mappings, []);
+
+    /// <summary>
+    /// In one locked read-modify-write: first removes <paramref name="stale"/> mappings (each only
+    /// where the file still maps the user to that VMID), then adds or replaces
+    /// <paramref name="mappings"/>. Returns how many stale mappings were removed.
+    /// </summary>
+    public static int Merge(string path, IEnumerable<UserMapping> mappings, IEnumerable<(string User, int VmId)> stale)
     {
         ArgumentNullException.ThrowIfNull(mappings);
+        ArgumentNullException.ThrowIfNull(stale);
         using var _ = AcquireLock(path);
         var root = Load(path) ?? new JsonObject();
         var users = UsersObject(root, create: true)!;
+        var current = ReadMappings(root);
+        int removed = 0;
+        foreach (var (user, vmId) in stale)
+        {
+            if (current.TryGetValue(user, out int mapped) && mapped == vmId && RemoveKey(users, user))
+            {
+                current.Remove(user);
+                removed++;
+            }
+        }
         foreach (var m in mappings)
         {
             RemoveKey(users, m.User);
             users[m.User] = new JsonObject { ["Node"] = m.Node, ["VmId"] = m.VmId };
         }
         Save(path, root);
+        return removed;
     }
 
     /// <summary>

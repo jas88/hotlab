@@ -96,6 +96,13 @@ public sealed partial class Deployer
         if (target is not null && !CheckConflicts(request, manifest, target))
             return 1;
 
+        // VMIDs this deployment may have mapped its users to before this run, so mappings of
+        // users no longer deployed can be pruned from the gateway users file afterwards.
+        var mappedBefore = manifest.Users
+            .Where(u => u.Status == DeployStatus.Deployed && u.VmId is not null)
+            .Select(u => (u.User, VmId: u.VmId!.Value))
+            .ToList();
+
         if (toDeploy.Count > 0)
             await DeployUsersAsync(request, state, toDeploy, ct).ConfigureAwait(false);
         if (addressChanged)
@@ -106,14 +113,19 @@ public sealed partial class Deployer
             .Select(u => new UserMapping(u.User, manifest.Node, u.VmId!.Value))
             .ToList();
         var usersJson = Path.Combine(OutDirOf(request), DeploymentOutputs.UsersJsonFile);
-        // When the gateway users file is the output users.json itself, the merge below writes it.
-        if (target is null || !DeploymentOutputs.SamePath(target, usersJson))
+        // When the gateway users file is (or may be) the output users.json itself, the merge
+        // below writes it: never overwrite the gateway's file with this deployment's map alone.
+        if (target is null || !DeploymentOutputs.MaybeSamePath(target, usersJson))
             DeploymentOutputs.WriteUsersJson(OutDirOf(request), mappings);
         if (target is not null)
         {
-            UserMapFile.Merge(target, mappings);
+            var stale = mappedBefore
+                .Where(m => !mappings.Any(d => string.Equals(d.User, m.User, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+            int pruned = UserMapFile.Merge(target, mappings, stale);
             manifest.UsersFileTarget = target;
-            _log.Info($"Merged {mappings.Count} mapping(s) into {target}.");
+            _log.Info($"Merged {mappings.Count} mapping(s) into {target}" +
+                (pruned > 0 ? $"; removed {pruned} of users no longer deployed." : "."));
         }
         state.Save();
 

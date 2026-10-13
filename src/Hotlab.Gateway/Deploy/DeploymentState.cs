@@ -26,13 +26,14 @@ internal sealed class DeploymentState
 
     public Dictionary<string, PasswordRow> Passwords { get; }
 
-    public DeployedUser GetOrAdd(string user)
+    /// <summary>The user's row; a new one (not yet saved) gets <paramref name="guestAccount"/>.</summary>
+    public DeployedUser GetOrAdd(string user, string guestAccount)
     {
         lock (_lock)
         {
             if (Manifest.Find(user) is { } row)
                 return row;
-            row = new DeployedUser { User = user, Updated = _time.GetUtcNow() };
+            row = new DeployedUser { User = user, GuestAccount = guestAccount, Updated = _time.GetUtcNow() };
             Manifest.Users.Add(row);
             return row;
         }
@@ -58,7 +59,7 @@ internal sealed class DeploymentState
             row.Updated = _time.GetUtcNow();
             if (Passwords.Remove(row.User))
                 DeploymentOutputs.WritePasswords(_dir, Passwords.Values);
-            File.Delete(Path.Combine(_dir, DeploymentOutputs.RdpFileName(row.User)));
+            DeploymentOutputs.DeleteRdp(_dir, row.User);
             SaveLocked();
         }
     }

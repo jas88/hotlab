@@ -74,6 +74,15 @@ internal sealed partial class FakeDeployBackend : IDeployBackend
     /// <summary>Most VM starts in flight at once.</summary>
     public int MaxConcurrentStarts { get; private set; }
 
+    /// <summary>HTTP status of the error a clone onto an existing VMID fails with (Proxmox itself sends 500).</summary>
+    public System.Net.HttpStatusCode CloneConflictStatus { get; set; } = System.Net.HttpStatusCode.InternalServerError;
+
+    /// <summary>
+    /// When set, a clone request creates the VM (untagged) but then fails with this status, as
+    /// a proxy's 502/504 can after Proxmox accepted the request.
+    /// </summary>
+    public System.Net.HttpStatusCode? CloneErrorAfterAccept { get; set; }
+
     /// <summary>Runs after a clone task is accepted, before it is waited for (e.g. to simulate a race).</summary>
     public Action<int>? AfterCloneAccepted { get; set; }
 
@@ -142,9 +151,11 @@ internal sealed partial class FakeDeployBackend : IDeployBackend
                 Accounts = new(source.Accounts),
             }))
             {
-                throw new ProxmoxApiException(System.Net.HttpStatusCode.InternalServerError, "POST", "clone",
+                throw new ProxmoxApiException(CloneConflictStatus, "POST", "clone",
                     $"unable to create VM {newVmId}: config file already exists");
             }
+            if (CloneErrorAfterAccept is { } status)
+                throw new ProxmoxApiException(status, "POST", "clone", "Bad Gateway");
             var upid = $"UPID:{node}:clone:{newVmId}";
             lock (_lock)
                 _tasks[upid] = (newVmId, CloneExit?.Invoke(name) ?? "OK");

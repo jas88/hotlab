@@ -35,16 +35,44 @@ public static class SystemConfigurationSources
 
     /// <summary>
     /// The configuration directory: <see cref="ConfigDirectoryVariable"/> if set, else
-    /// <paramref name="defaultDirectory"/> if it exists, else null.
+    /// <paramref name="defaultDirectory"/> if it exists, else null. An explicitly set directory
+    /// must exist and be readable: a typo there would otherwise silently drop every setting.
     /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// <see cref="ConfigDirectoryVariable"/> names a directory that does not exist or cannot be read.
+    /// </exception>
     public static string? ResolveConfigDirectory(
         Func<string, string?>? getEnvironment = null, string defaultDirectory = DefaultConfigDirectory)
     {
         getEnvironment ??= Environment.GetEnvironmentVariable;
         var dir = getEnvironment(ConfigDirectoryVariable);
         if (!string.IsNullOrWhiteSpace(dir))
-            return Path.GetFullPath(dir.Trim());
+        {
+            var full = Path.GetFullPath(dir.Trim());
+            EnsureReadableDirectory(full);
+            return full;
+        }
         return Directory.Exists(defaultDirectory) ? Path.GetFullPath(defaultDirectory) : null;
+    }
+
+    private static void EnsureReadableDirectory(string path)
+    {
+        if (!Directory.Exists(path))
+        {
+            throw new InvalidOperationException(
+                $"{ConfigDirectoryVariable} is set to '{path}', but that directory does not exist. " +
+                $"Create it, or unset {ConfigDirectoryVariable} to use {DefaultConfigDirectory} when present.");
+        }
+        try
+        {
+            using var entries = Directory.EnumerateFileSystemEntries(path).GetEnumerator();
+            _ = entries.MoveNext();
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or IOException)
+        {
+            throw new InvalidOperationException(
+                $"{ConfigDirectoryVariable} is set to '{path}', but that directory cannot be read: {ex.Message}", ex);
+        }
     }
 
     /// <summary>The systemd credentials directory, or null when not running with credentials.</summary>
@@ -60,6 +88,9 @@ public static class SystemConfigurationSources
     /// credentials directory (optional) before the first unprefixed environment-variable
     /// source, or appends them when there is none. Returns what was added.
     /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// <see cref="ConfigDirectoryVariable"/> names a directory that does not exist or cannot be read.
+    /// </exception>
     public static (string? ConfigDirectory, string? CredentialsDirectory) Add(
         IConfigurationBuilder builder,
         Func<string, string?>? getEnvironment = null,

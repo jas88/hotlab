@@ -20,6 +20,12 @@ public sealed class RoutingTokenOptions
     /// <summary>Minimum decoded HMAC-SHA256 key length in bytes.</summary>
     public const int MinimumKeyBytes = 32;
 
+    /// <summary>Longest token lifetime accepted anywhere (10 years); also the cap on <see cref="DefaultLifetime"/>.</summary>
+    public static readonly TimeSpan MaxLifetime = TimeSpan.FromDays(3650);
+
+    /// <summary>Largest accepted <see cref="ClockSkew"/>.</summary>
+    public static readonly TimeSpan MaxClockSkew = TimeSpan.FromHours(1);
+
     /// <summary>Base64 HMAC-SHA256 key (at least 32 bytes decoded). Empty disables tokens. Never log this.</summary>
     public string? SigningKey { get; set; }
 
@@ -57,7 +63,8 @@ public sealed class RoutingTokenOptions
 
     /// <summary>
     /// Checks the settings: a decodable signing key (if set), a positive
-    /// <see cref="DefaultLifetime"/> and a non-negative <see cref="ClockSkew"/>. Returns an
+    /// <see cref="DefaultLifetime"/> of at most <see cref="MaxLifetime"/> and a non-negative
+    /// <see cref="ClockSkew"/> of at most <see cref="MaxClockSkew"/>. Returns an
     /// error message, or null when valid. Used for startup validation of the gateway and of
     /// the CLI verbs.
     /// </summary>
@@ -75,11 +82,11 @@ public sealed class RoutingTokenOptions
 
         return OptionsValidation.Combine(
             keyError,
-            DefaultLifetime <= TimeSpan.Zero
-                ? $"{SectionName}:DefaultLifetime must be positive (got {DefaultLifetime})."
+            DefaultLifetime <= TimeSpan.Zero || DefaultLifetime > MaxLifetime
+                ? $"{SectionName}:DefaultLifetime must be positive and at most {MaxLifetime} (got {DefaultLifetime})."
                 : null,
-            ClockSkew < TimeSpan.Zero
-                ? $"{SectionName}:ClockSkew must not be negative (got {ClockSkew})."
+            ClockSkew < TimeSpan.Zero || ClockSkew > MaxClockSkew
+                ? $"{SectionName}:ClockSkew must not be negative and at most {MaxClockSkew} (got {ClockSkew})."
                 : null);
     }
 

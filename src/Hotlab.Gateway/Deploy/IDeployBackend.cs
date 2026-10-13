@@ -4,8 +4,11 @@ namespace Hotlab.Gateway.Deploy;
 
 /// <summary>
 /// The Proxmox operations <see cref="Deployer"/> and <see cref="Teardown"/> need. A thin seam
-/// over <see cref="ProxmoxClient"/> (one API call each; task-producing calls wait for the task
-/// and return its exit status) so the orchestration can be tested without a cluster.
+/// over <see cref="ProxmoxClient"/> so the orchestration can be tested without a cluster: one
+/// API call each, and task-producing calls wait for the task and return its exit status, except
+/// cloning, which is split into <see cref="StartCloneAsync"/> (returns the task id once Proxmox
+/// has accepted the request) and <see cref="WaitForTaskAsync"/>, so the caller knows whether a
+/// failure happened before or after a VM may have been created.
 /// </summary>
 public interface IDeployBackend
 {

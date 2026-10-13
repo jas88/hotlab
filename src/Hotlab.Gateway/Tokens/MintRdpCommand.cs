@@ -129,7 +129,7 @@ public static class MintRdpCommand
     }
 
     /// <summary>Longest lifetime <see cref="TryParseLifetime"/> accepts (10 years).</summary>
-    public static readonly TimeSpan MaxLifetime = TimeSpan.FromDays(3650);
+    public static readonly TimeSpan MaxLifetime = RoutingTokenOptions.MaxLifetime;
 
     /// <summary>
     /// Parses <c>8h</c>, <c>30m</c>, <c>90s</c>, <c>1d</c>, or a <see cref="TimeSpan"/> string.

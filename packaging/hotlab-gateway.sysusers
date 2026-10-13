@@ -1,0 +1,2 @@
+# Service account for hotlab-gateway.service (systemd-sysusers(8)).
+u hotlab - "Hotlab RDP gateway" /nonexistent /usr/sbin/nologin

@@ -1,0 +1,104 @@
+.TH HOTLAB-GATEWAY 1 "@DATE@" "hotlab @VERSION@" "User Commands"
+.SH NAME
+hotlab-gateway \- RDP gateway that starts Proxmox lab VMs on demand
+.SH SYNOPSIS
+.B hotlab-gateway
+.br
+.B hotlab-gateway mint-rdp
+.I user
+.B \-\-address
+.I host[:port]
+.RI [ options ]
+.br
+.B hotlab-gateway deploy
+.RI [ options ]
+.br
+.B hotlab-gateway teardown
+.B \-\-out
+.I dir
+.RI [ options ]
+.SH DESCRIPTION
+Without a verb,
+.B hotlab-gateway
+runs the RDP listener (normally as
+.BR hotlab-gateway.service ).
+It reads the routing token or user name from each client's first RDP packet,
+starts the user's Proxmox VE virtual machine if needed, and relays the
+connection to it.
+.PP
+.B mint-rdp
+writes an .rdp file carrying a signed routing token.
+.B deploy
+creates one clone of a source VM per user, with guest accounts and .rdp files;
+.B teardown
+removes a deployment again. Run a verb without arguments for its options.
+.SH CONFIGURATION
+Settings are read, later sources winning, from
+.IR /usr/lib/hotlab-gateway/appsettings.json ,
+.I $HOTLAB_CONFIG_DIR/appsettings.json
+(default
+.IR /etc/hotlab/appsettings.json ),
+systemd credentials in
+.I $CREDENTIALS_DIRECTORY
+(a file named
+.B Hotlab__Proxmox__TokenSecret
+supplies
+.BR Hotlab:Proxmox:TokenSecret ;
+see
+.BR SECRETS ),
+environment variables such as
+.BR Hotlab__Tokens__SigningKey ,
+and the command line.
+The user map is reloaded from
+.B $HOTLAB_USERS_FILE
+.RI ( /etc/hotlab/users.json
+for the service) when it changes.
+.SH SECRETS
+Encrypt the Proxmox token secret and the routing-token signing key, for example:
+.PP
+.RS
+.nf
+install \-d \-m 0700 /etc/credstore.encrypted
+systemd-creds encrypt \-\-name=Hotlab__Proxmox__TokenSecret \- \e
+    /etc/credstore.encrypted/Hotlab__Proxmox__TokenSecret
+systemd-creds encrypt \-\-name=Hotlab__Tokens__SigningKey \- \e
+    /etc/credstore.encrypted/Hotlab__Tokens__SigningKey
+.fi
+.RE
+.PP
+then load them into the service with a drop-in: run
+.B systemctl edit hotlab-gateway
+and add
+.PP
+.RS
+.nf
+[Service]
+LoadCredentialEncrypted=Hotlab__Proxmox__TokenSecret:/etc/credstore.encrypted/Hotlab__Proxmox__TokenSecret
+LoadCredentialEncrypted=Hotlab__Tokens__SigningKey:/etc/credstore.encrypted/Hotlab__Tokens__SigningKey
+.fi
+.RE
+.PP
+followed by
+.BR "systemctl restart hotlab-gateway" .
+systemd decrypts each credential into the service's
+.IR $CREDENTIALS_DIRECTORY .
+.SH FILES
+.TP
+.I /etc/hotlab/appsettings.json
+Site settings.
+.TP
+.I /etc/hotlab/users.json
+User-to-VM map, maintained by
+.BR "deploy \-\-users\-file\-target" .
+.TP
+.I /etc/credstore.encrypted/
+Suggested location for the secrets, encrypted with
+.BR systemd-creds (1).
+They are not loaded automatically: the packaged unit only documents the
+.B LoadCredentialEncrypted=
+lines, commented out (see
+.BR SECRETS ).
+.SH SEE ALSO
+.BR systemd-creds (1),
+.BR journalctl (1),
+.I /usr/share/doc/hotlab-gateway/README.md.gz

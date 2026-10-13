@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+
+UNIT=hotlab-gateway.service
+
+if [ "$1" = "remove" ] && [ -d /run/systemd/system ]; then
+	systemctl --system daemon-reload >/dev/null || true
+fi
+
+if [ "$1" = "purge" ]; then
+	if command -v deb-systemd-helper >/dev/null 2>&1; then
+		deb-systemd-helper purge "$UNIT" >/dev/null || true
+		deb-systemd-helper unmask "$UNIT" >/dev/null || true
+	fi
+	# "remove" keeps /etc/hotlab (site settings and the user map); "purge" deletes it.
+	# dpkg removes the conffile itself; the rest (users.json, lock files) is ours.
+	rm -rf /etc/hotlab
+	if dpkg-statoverride --list /etc/hotlab >/dev/null 2>&1; then
+		dpkg-statoverride --remove /etc/hotlab
+	fi
+	# The hotlab account is left in place, as Debian policy recommends, so files it may
+	# own elsewhere are not orphaned onto a reused UID.
+fi
+
+exit 0

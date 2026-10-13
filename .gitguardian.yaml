@@ -1,0 +1,12 @@
+version: 2
+
+secret:
+  # Test fixtures, not real credentials. Keep this list to exact values; never
+  # ignore whole paths, so a real secret pasted into a test is still caught.
+  ignored_matches:
+    - name: "test fixture: set-user-password form-encoding test (ProxmoxClientDeployTests)"
+      match: "p&ss=word"
+    - name: "test fixture: encoded form body for the same test"
+      match: "username=alice&password=p%26ss%3Dword&crypted=0"
+    - name: "test fixture: VM name passed to FakeDeployBackend.FailPasswordFor (DeployerRerunTests)"
+      match: "hotlab-lab-bob"

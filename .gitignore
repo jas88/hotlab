@@ -7,3 +7,14 @@ obj/
 *.user
 .vs/
 artifacts/
+
+# Deployment outputs and local config: may hold secrets
+passwords.csv
+*.rdp
+deployment.json
+appsettings.*.json
+
+# Added by ggshield
+.cache_ggshield
+/out/
+TestResults/

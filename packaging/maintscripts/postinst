@@ -1,0 +1,49 @@
+#!/bin/sh
+set -e
+
+UNIT=hotlab-gateway.service
+CONFDIR=/etc/hotlab
+USERS_FILE="$CONFDIR/users.json"
+
+if [ "$1" = "configure" ]; then
+	# Service account (u hotlab, from /usr/lib/sysusers.d/hotlab-gateway.conf).
+	systemd-sysusers hotlab-gateway.conf
+
+	# /etc/hotlab: root-owned and setgid hotlab, so files that deploy (run as root) writes
+	# there, such as users.json, are readable by the service but not writable by it.
+	# A stat override survives upgrades; an administrator may replace it with their own.
+	if ! dpkg-statoverride --list "$CONFDIR" >/dev/null 2>&1; then
+		dpkg-statoverride --update --add root hotlab 2750 "$CONFDIR"
+	fi
+
+	# The user map is rewritten by deploy, so it is not a conffile: create it once.
+	if [ ! -e "$USERS_FILE" ]; then
+		umask 027
+		printf '{\n  "Hotlab": {\n    "Users": {}\n  }\n}\n' > "$USERS_FILE.dpkg-new"
+		chown root:hotlab "$USERS_FILE.dpkg-new"
+		chmod 0640 "$USERS_FILE.dpkg-new"
+		mv "$USERS_FILE.dpkg-new" "$USERS_FILE"
+	fi
+fi
+
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ]; then
+	# Enable on install (as dh_installsystemd would), but do not start: the service needs
+	# the Proxmox URL, token and signing key first, and would fail without them.
+	# was-enabled defaults to true, so a new installation is enabled; an administrator's
+	# later "systemctl disable" is respected on upgrade.
+	if deb-systemd-helper --quiet was-enabled "$UNIT"; then
+		deb-systemd-helper enable "$UNIT" >/dev/null || true
+	else
+		deb-systemd-helper update-state "$UNIT" >/dev/null || true
+	fi
+
+	if [ -d /run/systemd/system ]; then
+		systemctl --system daemon-reload >/dev/null || true
+		# On upgrade, restart the new binary only if the service was running.
+		if [ -n "$2" ]; then
+			deb-systemd-invoke try-restart "$UNIT" >/dev/null || true
+		fi
+	fi
+fi
+
+exit 0

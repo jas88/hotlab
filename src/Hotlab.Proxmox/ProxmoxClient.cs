@@ -10,7 +10,7 @@ namespace Hotlab.Proxmox;
 /// Hotlab broker/spike needs: VM cloning, power management, destruction, task
 /// polling, and QEMU guest agent queries. Authenticates with an API token.
 /// </summary>
-public sealed class ProxmoxClient : IDisposable
+public sealed partial class ProxmoxClient : IDisposable
 {
     private const string ApiPrefix = "/api2/json";
 
@@ -95,6 +95,16 @@ public sealed class ProxmoxClient : IDisposable
         return data.RootElement.GetString()!;
     }
 
+    /// <summary>
+    /// Returns the VM's current power status as reported by Proxmox
+    /// (e.g. "running", "stopped", "paused").
+    /// </summary>
+    public async Task<string> GetVmStatusAsync(string node, int vmId, CancellationToken ct = default)
+    {
+        using var data = await GetAsync($"/nodes/{node}/qemu/{vmId}/status/current", ct).ConfigureAwait(false);
+        return data.RootElement.GetProperty("status").GetString() ?? "";
+    }
+
     /// <summary>Stops a VM (hard power-off). Returns the task UPID.</summary>
     public async Task<string> StopVmAsync(string node, int vmId, CancellationToken ct = default)
     {
@@ -127,58 +137,15 @@ public sealed class ProxmoxClient : IDisposable
         }
     }
 
-    /// <summary>
-    /// Pings the QEMU guest agent. Returns true when the agent responds, false when
-    /// the API reports an error (typically: agent not yet running in the guest).
-    /// </summary>
-    public async Task<bool> AgentPingAsync(string node, int vmId, CancellationToken ct = default)
-    {
-        using var response = await SendRawAsync(
-            HttpMethod.Post, $"/nodes/{node}/qemu/{vmId}/agent/ping", form: null, ct).ConfigureAwait(false);
-        return response.IsSuccessStatusCode;
-    }
-
-    /// <summary>
-    /// Returns the guest's non-loopback IPv4 addresses, as reported by the QEMU
-    /// guest agent. Empty if the agent reports no usable addresses yet.
-    /// </summary>
-    public async Task<IReadOnlyList<string>> AgentGetIpAddressesAsync(
-        string node, int vmId, CancellationToken ct = default)
-    {
-        using var data = await GetAsync($"/nodes/{node}/qemu/{vmId}/agent/network-get-interfaces", ct).ConfigureAwait(false);
-        var addresses = new List<string>();
-        if (!data.RootElement.TryGetProperty("result", out var interfaces))
-            return addresses;
-
-        foreach (var iface in interfaces.EnumerateArray())
-        {
-            if (iface.TryGetProperty("name", out var name) && name.GetString() == "lo")
-                continue;
-            if (!iface.TryGetProperty("ip-addresses", out var ips))
-                continue;
-            foreach (var ip in ips.EnumerateArray())
-            {
-                if (ip.GetProperty("ip-address-type").GetString() != "ipv4")
-                    continue;
-                var address = ip.GetProperty("ip-address").GetString();
-                if (address is null || address.StartsWith("127.", StringComparison.Ordinal))
-                    continue;
-                addresses.Add(address);
-            }
-        }
-
-        return addresses;
-    }
-
     private Task<JsonDocument> GetAsync(string path, CancellationToken ct) =>
         SendAsync(HttpMethod.Get, path, form: null, ct);
 
-    private Task<JsonDocument> PostAsync(string path, Dictionary<string, string>? form, CancellationToken ct) =>
+    private Task<JsonDocument> PostAsync(string path, IEnumerable<KeyValuePair<string, string>>? form, CancellationToken ct) =>
         SendAsync(HttpMethod.Post, path, form, ct);
 
     /// <summary>Sends a request and unwraps Proxmox's <c>{"data": ...}</c> envelope.</summary>
     private async Task<JsonDocument> SendAsync(
-        HttpMethod method, string path, Dictionary<string, string>? form, CancellationToken ct)
+        HttpMethod method, string path, IEnumerable<KeyValuePair<string, string>>? form, CancellationToken ct)
     {
         using var response = await SendRawAsync(method, path, form, ct).ConfigureAwait(false);
         var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
@@ -190,7 +157,7 @@ public sealed class ProxmoxClient : IDisposable
     }
 
     private async Task<HttpResponseMessage> SendRawAsync(
-        HttpMethod method, string path, Dictionary<string, string>? form, CancellationToken ct)
+        HttpMethod method, string path, IEnumerable<KeyValuePair<string, string>>? form, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(method, ApiPrefix + path);
         if (form is not null)

@@ -1,0 +1,3 @@
+# Self-contained .NET single-file executable: the runtime (with its statically linked
+# zlib-ng and other native components) is bundled into the binary by design.
+hotlab-gateway: embedded-library *

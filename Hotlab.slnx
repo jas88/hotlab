@@ -1,9 +1,11 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/Hotlab.Gateway/Hotlab.Gateway.csproj" />
     <Project Path="src/Hotlab.Proxmox/Hotlab.Proxmox.csproj" />
     <Project Path="src/Hotlab.Spike/Hotlab.Spike.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Hotlab.Gateway.Tests/Hotlab.Gateway.Tests.csproj" />
     <Project Path="tests/Hotlab.Proxmox.Tests/Hotlab.Proxmox.Tests.csproj" />
   </Folder>
 </Solution>

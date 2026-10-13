@@ -30,7 +30,8 @@ dpkg-query -W -f='${Conffiles}\n' hotlab-gateway | grep -q '/etc/hotlab/appsetti
 endstep
 
 step "systemd unit"
-systemd-analyze verify /usr/lib/systemd/system/hotlab-gateway.service
+# --man=no: man(1) is not a declared dependency; lintian checks the man page later.
+systemd-analyze verify --man=no /usr/lib/systemd/system/hotlab-gateway.service
 systemd-analyze security --offline=yes /usr/lib/systemd/system/hotlab-gateway.service || true
 endstep
 
